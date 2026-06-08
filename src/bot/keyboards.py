@@ -1,4 +1,5 @@
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup,\
+    ReplyKeyboardMarkup
 from typing import List, Dict, Any
 
 
@@ -13,7 +14,6 @@ def get_packages_keyboard(
         formatted_price = f"{pkg['price_rial']:,}"
         button_text = f"🛍️ {pkg['title']} | {formatted_price} تومان"
 
-        # آیدی پکیج را در دیتا پنهان می‌کنیم تا در ریلیشن‌ها استفاده شود
         callback_data = f"buy_pkg:{pkg['id']}"
         keyboard.append(
             [InlineKeyboardButton(button_text, callback_data=callback_data)])
@@ -37,3 +37,12 @@ def get_join_keyboard(channel_url: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("✅ تایید عضویت", callback_data="verify_join")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
+
+    reply_keyboard = [
+        ["🛍️ خرید اشتراک جدید"],
+        ["🎁 دریافت کانفیگ تست (رایگان)", "👤 سرویس‌های من"],
+        ["📊 پشتیبانی و راهنما"]
+    ]
+    return ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)

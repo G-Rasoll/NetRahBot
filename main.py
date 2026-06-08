@@ -24,7 +24,8 @@ def main() -> None:
         logger.info("Initializing NetRah Dynamic Order Engine...")
         application = ApplicationBuilder().token(BOT_TOKEN).build()
         PRIVATE = filters.ChatType.PRIVATE
-        # ثبت مسیریاب‌ها (Handlers)
+
+        # Handelers
         application.add_handler(CommandHandler("start", start_handler,
                                                filters=PRIVATE))
         application.add_handler(

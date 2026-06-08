@@ -113,10 +113,7 @@ class OrderService:
                                          user_id: int, tx_hash: str,
                                          amount_received: float) -> Dict[
         str, Any]:
-        """
-        پردازش اتمیک و فوق سریع فاکتورهای پرداخت شده همراه با ساختار ضد نشت تراکنش (Anti-Leak)
-        """
-        # ابتدا وضعیت فاکتور را به PAID تغییر می‌دهیم
+
         query_update_invoice = """
             UPDATE invoices 
             SET status_id = 2, tx_hash = ?, amount_received = ? 
@@ -125,7 +122,6 @@ class OrderService:
         await db.execute_non_query(query_update_invoice,
                                    (tx_hash, amount_received, invoice_id))
 
-        # ساختار اتمیک با سرعت بالا و لاک بهینه
         transaction_query = """
         BEGIN TRY
             BEGIN TRANSACTION;
@@ -183,11 +179,8 @@ class OrderService:
 
     async def claim_free_test_package(self, user_internal_id: int,
                                       telegram_id: int) -> Dict[str, Any]:
-        """
-        منطق دریافت اتمیک پکیج تست رایگان با امنیت ۱۰۰٪ در برابر مسابقه همزمانی کاربران
-        """
+
         try:
-            # ۱. بررسی وضعیت استفاده قبلی کاربر
             check_user_query = "SELECT has_used_test_package FROM users WHERE id = ?"
             user_status = await db.execute_query_single(check_user_query,
                                                         (user_internal_id,))
@@ -195,13 +188,11 @@ class OrderService:
             if not user_status or user_status['has_used_test_package']:
                 return {"status": "ALREADY_USED", "link": None}
 
-            # ۲. پیدا کردن آیدی پکیج تست فعال
             pkg_query = "SELECT id FROM packages WHERE is_test_package = 1 AND is_active = 1"
             test_pkg = await db.execute_query_single(pkg_query)
             if not test_pkg:
                 return {"status": "NO_TEST_PACKAGE_DEFINED", "link": None}
 
-            # ۳. کوئری ترنزاکشنال اتمیک بدون ریسک قفل‌شدگی دیتابیس
             test_transaction = """
             BEGIN TRY
                 BEGIN TRANSACTION;
@@ -258,10 +249,5 @@ class OrderService:
             return {"status": "ERROR", "link": None}
 
     async def handle_expired_invoices(self) -> int:
-        """
-        تغییر وضعیت فاکتورهایی که زمان قانونی پرداخت آن‌ها به سر رسیده است به وضعیت EXPIRED (آیدی 4)
-        """
         query = "UPDATE invoices SET status_id = 4 WHERE status_id = 1 AND expires_at < GETDATE()"
-        # این متد تعداد فاکتورهای منقضی شده را به دیتابیس برمی‌گرداند
-        # پکیج pyodbc مقدار تعداد ردیف‌های تاثیر‌پذیرفته را ثبت می‌کند اما در متد غیراستعلامی ما True/False برمی‌گرداند.
         await db.execute_non_query(query)
