@@ -6,6 +6,10 @@ from src.services.package_service import PackageService
 from src.services.order_service import OrderService
 from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard
 from config import INVOICE_EXPIRY_MINUTES
+from config import INVOICE_EXPIRY_MINUTES, REQUIRED_CHANNEL, CHANNEL_LINK
+from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard,\
+    get_join_keyboard
+
 
 logger = logging.getLogger(__name__)
 user_service = UserService()
@@ -18,6 +22,18 @@ async def start_handler(update: Update,
     tg_user = update.effective_user
     if not tg_user:
         return
+
+    if not await is_user_member(context.bot, tg_user.id):
+        kb = get_join_keyboard(CHANNEL_LINK)
+        await update.message.reply_text(
+            "⚠️ برای استفاده از خدمات ربات نت‌راه، ابتدا باید عضو کانال ما شوید.\n"
+            "پس از عضویت، روی دکمه **تایید عضویت** کلیک کنید:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        return
+
+
     try:
         internal_id = await user_service.register_or_update_user(
             telegram_id=tg_user.id, username=tg_user.username,
@@ -51,6 +67,17 @@ async def menu_handler(update: Update,
     """
     text = update.message.text
     user_tg_id = update.effective_user.id
+
+    # Force Join
+    if not await is_user_member(context.bot, user_tg_id):
+        kb = get_join_keyboard(CHANNEL_LINK)
+        await update.message.reply_text(
+            "❌ شما عضو کانال نیستید یا از آن خارج شده‌اید!\n"
+            "برای دسترسی دوباره به منوی ربات، حتماً باید عضو کانال زیر باشید:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        return
 
     # اطمینان از وجود آیدی داخلی در وضعیت جاری Session
     internal_id = context.user_data.get('internal_db_id')
@@ -148,6 +175,15 @@ async def package_selection_callback(update: Update,
     query = update.callback_query
     await query.answer()  # حذف حالت Loading دکمه شیشه‌ای در کلاینت تلگرام
 
+    user_tg_id = update.effective_user.id
+    if not await is_user_member(context.bot, user_tg_id):
+        kb = get_join_keyboard(CHANNEL_LINK)
+        await query.message.reply_text(
+            "❌ برای خرید یا انتخاب پکیج، باید عضو کانال باشید:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        return
     data = query.data
     if not data or not data.startswith("buy_pkg:"):
         return
@@ -187,3 +223,64 @@ async def package_selection_callback(update: Update,
         logger.error(f"Error processing invoice generation call: {e}")
         await query.message.reply_text(
             "⚠️ مشکلی در سیستم صدور فاکتور رخ داد. مجدداً تلاش فرمایید.")
+
+
+async def is_user_member(bot, telegram_id: int) -> bool:
+    try:
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=telegram_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        logger.error(f"Error checking channel membership for {telegram_id}: {e}")
+        return False
+
+
+async def verify_join_callback(update: Update,
+                               context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    هندلر بررسی کلیک روی دکمه تایید عضویت کانال
+    """
+    query = update.callback_query
+    tg_user = update.effective_user
+
+    if not tg_user:
+        await query.answer()
+        return
+
+    if await is_user_member(context.bot, tg_user.id):
+        # عضو شده است؛ پیغام موفقیت به صورت آلرت باز می‌شود
+        await query.answer("✅ عضویت شما با موفقیت تایید شد!", show_alert=True)
+
+        # برای لود شدن منو، منطق اصلی ثبت‌نام/ورود را برایش اجرا می‌کنیم
+        try:
+            internal_id = await user_service.register_or_update_user(
+                telegram_id=tg_user.id, username=tg_user.username,
+                first_name=tg_user.first_name
+            )
+            if internal_id == -1:
+                await query.message.reply_text(
+                    "❌ حساب کاربری شما در این ربات مسدود شده است.")
+                return
+
+            context.user_data['internal_db_id'] = internal_id
+
+            reply_keyboard = [
+                ["🛍️ خرید اشتراک جدید"],
+                ["🎁 دریافت کانفیگ تست (رایگان)", "👤 سرویس‌های من"],
+                ["📊 پشتیبانی و راهنما"]
+            ]
+            markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+            welcome_text = f"خوش آمدید! 🚀\nمنوی ربات **نت‌راه** برای شما فعال شد."
+            await query.message.reply_text(welcome_text, reply_markup=markup,
+                                           parse_mode="Markdown")
+
+            # حذف پیام قبلی که حاوی دکمه شیشه‌ای عضویت بود برای خلوت شدن چت (اختیاری)
+            await query.message.delete()
+
+        except Exception as e:
+            logger.error(f"Error in verify_join_callback onboarding: {e}")
+            await query.message.reply_text("⚠️ خطا در ارتباط با سرور.")
+    else:
+        # هنوز عضو نشده است
+        await query.answer(
+            "❌ شما هنوز عضو کانال نشده‌اید. لطفاً ابتدا عضو شوید!",
+            show_alert=True)

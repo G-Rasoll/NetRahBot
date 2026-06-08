@@ -5,6 +5,9 @@ from config import BOT_TOKEN
 from src.bot.handlers import start_handler, menu_handler, \
     package_selection_callback
 import socket
+from src.bot.handlers import start_handler, menu_handler, \
+    package_selection_callback, verify_join_callback
+
 
 socket.setdefaulttimeout(30)
 
@@ -24,6 +27,9 @@ def main() -> None:
         # ثبت مسیریاب‌ها (Handlers)
         application.add_handler(CommandHandler("start", start_handler,
                                                filters=PRIVATE))
+        application.add_handler(
+            CallbackQueryHandler(verify_join_callback, pattern="^verify_join$"))
+
         application.add_handler(CallbackQueryHandler(package_selection_callback,
                                                      pattern="^buy_pkg:"))
         application.add_handler(

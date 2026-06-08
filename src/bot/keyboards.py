@@ -29,3 +29,11 @@ def get_payment_keyboard(pay_url: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("💎 پرداخت مستقیم از ولت (TON)", url=pay_url)]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def get_join_keyboard(channel_url: str) -> InlineKeyboardMarkup:
+
+    keyboard = [
+        [InlineKeyboardButton("📢 عضویت در کانال نت‌راه", url=channel_url)],
+        [InlineKeyboardButton("✅ تایید عضویت", callback_data="verify_join")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
