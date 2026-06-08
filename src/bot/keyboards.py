@@ -11,7 +11,7 @@ def get_packages_keyboard(
     for pkg in packages:
         # frmat price
         formatted_price = f"{pkg['price_rial']:,}"
-        button_text = f"🛍️ {pkg['title']} | {formatted_price} ریال"
+        button_text = f"🛍️ {pkg['title']} | {formatted_price} تومان"
 
         # آیدی پکیج را در دیتا پنهان می‌کنیم تا در ریلیشن‌ها استفاده شود
         callback_data = f"buy_pkg:{pkg['id']}"

@@ -78,9 +78,63 @@ async def menu_handler(update: Update,
             logger.error(f"Error showing packages to user: {e}")
             await update.message.reply_text("⚠️ خطا در لود کردن لیست پکیج‌ها.")
 
+    elif text == "📊 پشتیبانی و راهنما":
+        await  update.message.reply_text("👤 ایدی پشتیبانی جهت ارتباط:\n@NetRah_Support")
+
+    elif text == "👤 سرویس‌های من":
+        await  update.message.reply_text("صبر کن دارم می نویسمش")
     elif text == "🎁 دریافت کانفیگ تست (رایگان)":
-        await update.message.reply_text(
-            "✨ این بخش در گام بعدی (پیاده‌سازی تحویل خودکار) فعال خواهد شد.")
+
+        try:
+
+            # فراخوانی سرویس اختصاص پکیج تست رایگان
+
+            result = await order_service.claim_free_test_package(internal_id,
+                                                                 user_tg_id)
+
+            if result["status"] == "SUCCESS":
+
+                success_test_text = (
+
+                    f"🎁 **کانفیگ تست رایگان شما با موفقیت صادر شد!**\n\n"
+
+                    f"🔗 **لینک اتصال شما:**\n"
+
+                    f"`{result['link']}`\n\n"
+
+                    f"⚠️ توجه داشته باشید که هر کاربر تنها یک‌بار مجاز به استفاده از تست رایگان سیستم می‌باشد."
+
+                )
+
+                await update.message.reply_text(success_test_text,
+                                                parse_mode="Markdown")
+
+
+            elif result["status"] == "ALREADY_USED":
+
+                await update.message.reply_text(
+                    "❌ شما قبلاً یک‌بار پکیج تست رایگان خود را دریافت کرده‌اید و مجاز به دریافت مجدد نیستید.")
+
+
+            elif result["status"] == "OUT_OF_STOCK":
+
+                await update.message.reply_text(
+                    "😔 متاسفانه در حال حاضر کانفیگ تست در انبار پشتیبان موجود نیست. لطفا بعداً تلاش کنید یا به پشتیبانی پیام دهید.")
+
+
+            elif result["status"] == "NO_TEST_PACKAGE_DEFINED":
+
+                await update.message.reply_text(
+                    "⚙️ پکیج تست توسط مدیریت تعریف نشده است.")
+
+
+        except Exception as e:
+
+            logger.error(
+                f"Error handling free test package for user {user_tg_id}: {e}")
+
+            await update.message.reply_text(
+                "⚠️ خطایی در پردازش درخواست شما رخ داد.")
     else:
         await update.message.reply_text(
             "💡 لطفاً از گزینه‌های منو استفاده کنید.")
