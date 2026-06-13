@@ -15,7 +15,7 @@ class PackageService:
             query = (
                 "SELECT id, title, volume_mb, price_rial "
                 "FROM packages "
-                "WHERE is_active = 1 AND is_test_package = 0"
+                "WHERE is_active = 1 AND is_test_package = 0 AND is_gift_package = 0"
             )
             return await db.execute_query_all(query)
         except Exception as e:

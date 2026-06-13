@@ -1,5 +1,7 @@
 import logging
+import secrets
 from src.infrastructure.database import db
+
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +23,15 @@ class UserService:
                 await db.execute_non_query(query_update,
                                            (username, first_name, telegram_id))
                 return user['id']
-
+            token = secrets.token_hex(6)
             query_insert = (
-                "INSERT INTO users (telegram_id, username, first_name, balance, has_used_test_package, is_banned) "
-                "VALUES (?, ?, ?, 0.0, 0, 0)"
+                "INSERT INTO users (telegram_id, username, first_name, balance, has_used_test_package, is_banned, referral_token) "
+                "VALUES (?, ?, ?, 0.0, 0, 0, ?)"
             )
             internal_id = await db.execute_non_query(query_insert, (
-                telegram_id, username, first_name))
+                telegram_id, username, first_name, token))
             logger.info(
-                f"New user registered: {telegram_id} with internal ID: {internal_id}")
+                f"New user registered: {telegram_id} with internal ID: {internal_id} and token: {token}")
             return internal_id
 
         except Exception as e:
@@ -63,3 +65,22 @@ class UserService:
             logger.error(
                 f"Error fetching subscriptions for user_id {user_id}: {e}")
             raise e
+
+    async def get_user_referral_token(self, user_id: int) -> str:
+
+        query = "SELECT referral_token FROM users WHERE id = ?"
+        result = await db.execute_query_single(query, (user_id,))
+
+        if result and result['referral_token']:
+            return result['referral_token']
+
+        new_token = secrets.token_hex(6)
+        update_query = "UPDATE users SET referral_token = ? WHERE id = ?"
+        await db.execute_non_query(update_query, (new_token, user_id))
+        return new_token
+
+    async def get_user_id_by_token(self, token: str) :
+
+        query = "SELECT id FROM users WHERE referral_token = ?"
+        result = await db.execute_query_single(query, (token,))
+        return result['id'] if result else None

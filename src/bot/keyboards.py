@@ -43,6 +43,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
     reply_keyboard = [
         ["🛍️ خرید اشتراک جدید"],
         ["🎁 دریافت کانفیگ تست (رایگان)", "👤 سرویس‌های من"],
-        ["📊 پشتیبانی و راهنما"]
+        ["📊 پشتیبانی و راهنما"],
+        ["👥 زیرمجموعه‌گیری و دعوت"]
     ]
     return ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)

@@ -9,12 +9,13 @@ from config import INVOICE_EXPIRY_MINUTES
 from config import INVOICE_EXPIRY_MINUTES, REQUIRED_CHANNEL, CHANNEL_LINK
 from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard,\
     get_join_keyboard, get_main_menu_keyboard
-
+from src.services.referral_service import ReferralService
 
 logger = logging.getLogger(__name__)
 user_service = UserService()
 package_service = PackageService()
 order_service = OrderService()
+referral_service = ReferralService()
 
 
 async def start_handler(update: Update,
@@ -22,6 +23,18 @@ async def start_handler(update: Update,
     tg_user = update.effective_user
     if not tg_user:
         return
+
+    # --- بخش جدید: پردازش پارامتر لینک دعوت (Deep Linking) ---
+    if context.args and context.args[0].startswith("ref_"):
+        raw_token = context.args[0].replace("ref_", "")
+        try:
+            inviter_id_str = await user_service.get_user_id_by_token(raw_token)
+            inviter_internal_id = int(inviter_id_str)
+            # ثبت دعوت اولیه با بررسی لایه‌های ضد تقلب دیتابیس
+            await referral_service.record_pending_referral(
+                inviter_internal_id, tg_user.id)
+        except Exception as ex:
+            logger.error(f"Error decoding referral arg: {ex}")
 
     if not await is_user_member(context.bot, tg_user.id):
         kb = get_join_keyboard(CHANNEL_LINK)
@@ -98,6 +111,34 @@ async def menu_handler(update: Update,
         except Exception as e:
             logger.error(f"Error showing packages to user: {e}")
             await update.message.reply_text("⚠️ خطا در لود کردن لیست پکیج‌ها.")
+
+    elif text == "👥 زیرمجموعه‌گیری و دعوت":
+        try:
+            stats = await referral_service.get_user_referral_stats(internal_id)
+            bot_info = await context.bot.get_me()
+
+
+            user_token = await user_service.get_user_referral_token(internal_id)
+            invite_link = f"https://t.me/NetRahBot?start=ref_{user_token}"
+
+            msg = (
+                f"👥 **سیستم زیرمجموعه‌گیری و دریافت هدیه نت‌راه**\n\n"
+                f"با دعوت از دوستان خود به ربات، کانفیگ رایگان بگیرید! 🎁\n\n"
+                f"🔗 **لینک دعوت اختصاصی شما:**\n"
+                f"`{invite_link}`\n\n"
+                f"📊 **آمار دعوت‌های شما:**\n"
+                f"▫️ تعداد کل دعوت‌ها: `{stats['total_invites']}` نفر\n"
+                f"▫️ امتیازهای فعال فعلی: `{stats['current_points']}` امتیاز\n"
+                f"🎯 امتیاز مورد نیاز برای هدیه: `{stats['required_invites']}` امتیاز\n\n"
+                f"💡 **راهنما:** به ازای هر `{stats['required_invites']}` نفری که با لینک شما وارد ربات شده و عضویت کانال را تایید کنند، سیستم به صورت کاملاً خودکار **یک کانفیگ ۱ گیگابایتی رایگان** صادر کرده و برای شما ارسال می‌کند."
+            )
+            await update.message.reply_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Error displaying referral menu: {e}")
+            await update.message.reply_text(
+                "⚠️ خطایی در بارگذاری منوی دعوت رخ داد.")
+
+
 
     elif text == "📊 پشتیبانی و راهنما":
         await  update.message.reply_text("👤 ایدی پشتیبانی جهت ارتباط:\n@NetRah_Support")
@@ -281,6 +322,39 @@ async def verify_join_callback(update: Update,
                 return
 
             context.user_data['internal_db_id'] = internal_id
+
+            # --- بخش جدید: بررسی و ارتقای سطح سیستم دعوت پاداش دار ---
+            ref_res = await referral_service.complete_referral_if_exists(
+                tg_user.id)
+            if ref_res and ref_res.get("success"):
+                inviter_chat_id = ref_res["inviter_telegram_id"]
+                if ref_res["reward_granted"]:
+                    # حد نصاب پر شد و کانفیگ هدیه صادر شد
+                    await context.bot.send_message(
+                        chat_id=inviter_chat_id,
+                        text=f"🎉 **تبریک! تعداد دعوت‌های شما به حد نصاب رسید.**\n\n"
+                             f"🎁 یک کانفیگ هدیه ۱ گیگابایتی اختصاصی برای شما صادر و به منوی «👤 سرویس‌های من» شما اضافه شد:\n"
+                             f"`{ref_res['link']}`\n\n"
+                             f"میتوانید با دعوت دوستان بیشتر، مجدداً هدیه بگیرید!",
+                        parse_mode="Markdown"
+                    )
+                elif ref_res["out_of_stock"]:
+                    # امتیاز ثبت شد اما انبار خالی بود
+                    await context.bot.send_message(
+                        chat_id=inviter_chat_id,
+                        text=f"👤 یک کاربر جدید با دعوت شما به ربات پیوست!\n"
+                             f"⚠️ امتیاز شما اضافه شد اما متاسفانه انبار کانفیگ‌های هدیه خالی است. مدیریت مطلع شد و به محض شارژ انبار، هدیه شما ارسال خواهد شد.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    # فقط امتیاز اضافه شد ولی هنوز به حد نصاب نرسیده
+                    await context.bot.send_message(
+                        chat_id=inviter_chat_id,
+                        text=f"👤 **یک کاربر جدید با لینک دعوت شما عضو ربات شد!**\n"
+                             f"📊 وضعیت امتیاز شما: `{ref_res['current_points']}/{ref_res['required_invites']}`",
+                        parse_mode="Markdown"
+                    )
+            # ----------------------------------------------------
 
             markup = get_main_menu_keyboard()
             welcome_text = f"خوش آمدید! 🚀\nمنوی ربات **نت‌راه** برای شما فعال شد."
