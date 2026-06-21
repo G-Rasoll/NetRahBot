@@ -7,7 +7,7 @@ from src.services.order_service import OrderService
 from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard
 from config import INVOICE_EXPIRY_MINUTES
 from config import INVOICE_EXPIRY_MINUTES, REQUIRED_CHANNEL, CHANNEL_LINK
-from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard,\
+from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard, \
     get_join_keyboard, get_main_menu_keyboard
 from src.services.referral_service import ReferralService
 
@@ -45,7 +45,6 @@ async def start_handler(update: Update,
             parse_mode="Markdown"
         )
         return
-
 
     try:
         internal_id = await user_service.register_or_update_user(
@@ -117,7 +116,6 @@ async def menu_handler(update: Update,
             stats = await referral_service.get_user_referral_stats(internal_id)
             bot_info = await context.bot.get_me()
 
-
             user_token = await user_service.get_user_referral_token(internal_id)
             invite_link = f"https://t.me/NetRahBot?start=ref_{user_token}"
 
@@ -141,25 +139,28 @@ async def menu_handler(update: Update,
 
 
     elif text == "📊 پشتیبانی و راهنما":
-        await  update.message.reply_text("👤 ایدی پشتیبانی جهت ارتباط:\n@NetRah_Support")
+        await  update.message.reply_text(
+            "👤 ایدی پشتیبانی جهت ارتباط:\n@NetRah_Support")
 
     elif text == "👤 سرویس‌های من":
 
         try:
 
-            subscriptions = await user_service.get_user_subscriptions(internal_id)
+            subscriptions = await user_service.get_user_subscriptions(
+                internal_id)
             if not subscriptions:
                 empty_text = (
 
                     "🤷‍♂️ **شما در حال حاضر هیچ سرویس فعالی ندارید!**\n\n"
-        
+
                     "💡 برای شروع می‌توانید از منوی زیر یکی از گزینه‌های **خرید اشتراک جدید** "
-        
+
                     "یا **دریافت کانفیگ تست (رایگان)** را انتخاب کنید."
 
                 )
 
-                await update.message.reply_text(empty_text, parse_mode="Markdown")
+                await update.message.reply_text(empty_text,
+                                                parse_mode="Markdown")
 
                 return
 
@@ -167,11 +168,11 @@ async def menu_handler(update: Update,
             message_text += "───────────────────\n"
 
             for idx, sub in enumerate(subscriptions, 1):
-
                 pkg_type = "🎁 تست رایگان" if sub[
                     'is_test_package'] else "🛍️ اشتراک تجاری"
 
-                date_str = sub['assigned_at'].strftime('%Y-%m-%d %H:%M') if hasattr(
+                date_str = sub['assigned_at'].strftime(
+                    '%Y-%m-%d %H:%M') if hasattr(
                     sub['assigned_at'], 'strftime') else str(sub['assigned_at'])
 
                 message_text += (
@@ -292,16 +293,17 @@ async def package_selection_callback(update: Update,
 
 async def is_user_member(bot, telegram_id: int) -> bool:
     try:
-        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=telegram_id)
+        member = await bot.get_chat_member(chat_id=REQUIRED_CHANNEL,
+                                           user_id=telegram_id)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
-        logger.error(f"Error checking channel membership for {telegram_id}: {e}")
+        logger.error(
+            f"Error checking channel membership for {telegram_id}: {e}")
         return False
 
 
 async def verify_join_callback(update: Update,
                                context: ContextTypes.DEFAULT_TYPE) -> None:
-
     query = update.callback_query
     tg_user = update.effective_user
     if not tg_user:

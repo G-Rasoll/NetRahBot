@@ -1,6 +1,8 @@
 import logging
 from typing import Optional, Dict, Any
 from src.infrastructure.database import db
+from src.infrastructure.panel_api import panel_api
+from config import PANEL_ALLOCATION_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -77,13 +79,12 @@ class ReferralService:
     Optional[Dict[str, Any]]:
         """تکمیل اتمیک فرآیند دعوت و تخصیص آنی کانفیگ هدیه در صورت رسیدن به حد نصاب"""
         try:
-            # بررسی وجود دعوت ثبت شده فعال برای این کاربر
             check_query = """
-                SELECT r.inviter_id, u.telegram_id as inviter_telegram_id 
-                FROM referrals r
-                JOIN users u ON r.inviter_id = u.id
-                WHERE r.referee_telegram_id = ? AND r.status = 'PENDING'
-            """
+                        SELECT r.inviter_id, u.telegram_id as inviter_telegram_id 
+                        FROM referrals r
+                        JOIN users u ON r.inviter_id = u.id
+                        WHERE r.referee_telegram_id = ? AND r.status = 'PENDING'
+                    """
             ref_info = await db.execute_query_single(check_query,
                                                      (referee_telegram_id,))
             if not ref_info:
@@ -92,111 +93,222 @@ class ReferralService:
             inviter_id = ref_info['inviter_id']
             inviter_tg_id = ref_info['inviter_telegram_id']
 
-            # اضافه شدن SET NOCOUNT ON جهت وادار کردن دیتابیس به بازگرداندنِ مستقیم نتایج SELECT نهایی به پایتون
-            transaction_query = """
-            SET NOCOUNT ON;
-            BEGIN TRY
-                BEGIN TRANSACTION;
+            # 1. تکمیل رفرال و محاسبه امتیاز (بدون اعطای پاداش در این مرحله)
+            grant_points_query = """
+                    SET NOCOUNT ON;
+                    BEGIN TRY
+                        BEGIN TRANSACTION;
+                        DECLARE @RequiredInvites INT;
+                        DECLARE @GiftPkgId INT;
+                        SELECT @RequiredInvites = required_invites, @GiftPkgId = gift_package_id FROM referral_settings WHERE id = 1;
 
-                DECLARE @RequiredInvites INT;
-                DECLARE @GiftPkgId INT;
-                SELECT @RequiredInvites = required_invites, @GiftPkgId = gift_package_id FROM referral_settings WHERE id = 1;
+                        UPDATE referrals SET status = 'COMPLETED', completed_at = GETDATE() WHERE referee_telegram_id = ? AND status = 'PENDING';
 
-                -- ۱. تبدیل وضعیت دعوت به تکمیل شده
-                UPDATE referrals 
-                SET status = 'COMPLETED', completed_at = GETDATE() 
-                WHERE referee_telegram_id = ? AND status = 'PENDING';
+                        IF NOT EXISTS (SELECT 1 FROM user_referral_stats WHERE user_id = ?)
+                            INSERT INTO user_referral_stats (user_id, current_points, total_invites) VALUES (?, 0, 0);
 
-                -- ۲. تضمین وجود سطر آماری برای دعوت‌کننده
-                IF NOT EXISTS (SELECT 1 FROM user_referral_stats WHERE user_id = ?)
-                BEGIN
-                    INSERT INTO user_referral_stats (user_id, current_points, total_invites) VALUES (?, 0, 0);
-                END
+                        UPDATE user_referral_stats SET current_points = current_points + 1, total_invites = total_invites + 1 WHERE user_id = ?;
 
-                -- ۳. افزایش آنی امتیازهای فعال و کل دعوت‌ها
-                UPDATE user_referral_stats
-                SET current_points = current_points + 1,
-                    total_invites = total_invites + 1
-                WHERE user_id = ?;
+                        DECLARE @CurrentPoints INT;
+                        SELECT @CurrentPoints = current_points FROM user_referral_stats WHERE user_id = ?;
 
-                DECLARE @CurrentPoints INT;
-                SELECT @CurrentPoints = current_points FROM user_referral_stats WHERE user_id = ?;
+                        COMMIT TRANSACTION;
+                        SELECT 1 AS success, @CurrentPoints AS current_points, @RequiredInvites AS required_invites, @GiftPkgId AS gift_package_id;
+                    END TRY
+                    BEGIN CATCH
+                        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                        THROW;
+                    END CATCH
+                    """
+            points_res = await db.execute_query_single(grant_points_query, (
+            referee_telegram_id, inviter_id, inviter_id, inviter_id,
+            inviter_id))
 
-                DECLARE @RewardGranted BIT = 0;
-                DECLARE @SubLink NVARCHAR(MAX) = NULL;
-                DECLARE @OutOfStock BIT = 0;
+            if not points_res:
+                return None
 
-                -- ۴. بررسی رسیدن به حد نصاب دریافت پکیج هدیه
-                IF @CurrentPoints >= @RequiredInvites
-                BEGIN
-                    -- کسر امتیاز حد نصاب (با متد کسر ریاضی جهت حفظ امتیازهای مازاد احتمالی)
-                    UPDATE user_referral_stats 
-                    SET current_points = current_points - @RequiredInvites 
-                    WHERE user_id = ?;
+            current_points = points_res['current_points']
+            required_invites = points_res['required_invites']
+            gift_package_id = points_res['gift_package_id']
 
-                    -- صید اتمیک کانفیگ هدیه از انبار
-                    DECLARE @UpdatedInventory TABLE (id INT, subscription_link NVARCHAR(MAX));
+            response_data = {
+                "success": 1,
+                "inviter_telegram_id": inviter_tg_id,
+                "reward_granted": False,
+                "link": None,
+                "required_invites": required_invites,
+                "current_points": current_points,
+                "out_of_stock": False
+            }
 
-                    UPDATE TOP (1) subscription_inventory 
-                    SET is_assigned = 1 
-                    OUTPUT INSERTED.id, INSERTED.subscription_link INTO @UpdatedInventory 
-                    WHERE package_id = @GiftPkgId AND is_assigned = 0;
+            # 2. بررسی رسیدن به حد نصاب و تخصیص جایزه
+            if current_points >= required_invites:
+                if PANEL_ALLOCATION_MODE == "AUTO":
+                    try:
+                        pkg_query = "SELECT volume_gb FROM packages WHERE id = ?"
+                        gift_pkg = await db.execute_query_single(pkg_query, (
+                        gift_package_id,))
+                        vol_gb = float(gift_pkg['volume_gb'])
 
-                    IF EXISTS (SELECT 1 FROM @UpdatedInventory)
-                    BEGIN
-                        DECLARE @InventoryId INT;
-                        SELECT @InventoryId = id, @SubLink = subscription_link FROM @UpdatedInventory;
+                        generated_link = await panel_api.create_user_config(
+                            vol_gb)
 
-                        -- ثبت کانفیگ هدیه در اشتراک‌های کاربر (بدون invoice_id چون هدیه است)
-                        INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at) 
-                        VALUES (?, @InventoryId, NULL, GETDATE());
+                        auto_reward_tx = """
+                                BEGIN TRY
+                                    BEGIN TRANSACTION;
+                                    UPDATE user_referral_stats SET current_points = current_points - ? WHERE user_id = ?;
 
-                        SET @RewardGranted = 1;
-                    END
-                    ELSE
-                    BEGIN
-                        -- بن‌بست انبار خالی: عودت امتیاز کسر شده به کاربر تا هدیه نسوزد
-                        UPDATE user_referral_stats 
-                        SET current_points = current_points + @RequiredInvites 
-                        WHERE user_id = ?;
+                                    INSERT INTO subscription_inventory (package_id, subscription_link, is_assigned, created_at)
+                                    VALUES (?, ?, 1, GETDATE());
+                                    DECLARE @InventoryId INT = SCOPE_IDENTITY();
 
-                        SET @OutOfStock = 1;
-                    END
-                END
+                                    INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
+                                    VALUES (?, @InventoryId, NULL, GETDATE());
 
-                SELECT @CurrentPoints = current_points FROM user_referral_stats WHERE user_id = ?;
+                                    COMMIT TRANSACTION;
+                                    SELECT current_points FROM user_referral_stats WHERE user_id = ?;
+                                END TRY
+                                BEGIN CATCH
+                                    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                                    THROW;
+                                END CATCH
+                                """
+                        await db.execute_query_single(auto_reward_tx, (
+                        required_invites, inviter_id, gift_package_id,
+                        generated_link, inviter_id, inviter_id))
+                        response_data.update(
+                            {"reward_granted": True, "link": generated_link,
+                             "current_points": current_points - required_invites})
 
-                COMMIT TRANSACTION;
+                    except Exception as e:
+                        logger.error(
+                            f"Error auto-generating referral gift: {e}")
+                        response_data["out_of_stock"] = True
 
-                -- خروجی نهایی که مستقیماً به دست پایتون می‌رسد
-                SELECT 1 AS success, @RewardGranted AS reward_granted, @SubLink AS link, 
-                       @RequiredInvites AS required_invites, @CurrentPoints AS current_points, @OutOfStock AS out_of_stock;
+                else:
+                    # حالت DATABASE
+                    db_reward_tx = """
+                            BEGIN TRY
+                                BEGIN TRANSACTION;
+                                DECLARE @SubLink NVARCHAR(MAX) = NULL;
+                                DECLARE @UpdatedInventory TABLE (id INT, subscription_link NVARCHAR(MAX));
 
-            END TRY
-            BEGIN CATCH
-                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-                THROW;
-            END CATCH
-            """
+                                UPDATE user_referral_stats SET current_points = current_points - ? WHERE user_id = ?;
 
+                                UPDATE TOP (1) subscription_inventory 
+                                SET is_assigned = 1 OUTPUT INSERTED.id, INSERTED.subscription_link INTO @UpdatedInventory 
+                                WHERE package_id = ? AND is_assigned = 0;
 
-            params = (
-                referee_telegram_id,
-                inviter_id,
-                inviter_id,
-                inviter_id,
-                inviter_id,
-                inviter_id,
-                inviter_id,
-                inviter_id,
-                inviter_id
-            )
+                                IF EXISTS (SELECT 1 FROM @UpdatedInventory)
+                                BEGIN
+                                    DECLARE @InventoryId INT;
+                                    SELECT @InventoryId = id, @SubLink = subscription_link FROM @UpdatedInventory;
+                                    INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at) 
+                                    VALUES (?, @InventoryId, NULL, GETDATE());
+                                    COMMIT TRANSACTION;
+                                    SELECT 1 AS reward_granted, @SubLink AS link;
+                                END
+                                ELSE
+                                BEGIN
+                                    -- بازگشت امتیاز در صورت خالی بودن انبار
+                                    UPDATE user_referral_stats SET current_points = current_points + ? WHERE user_id = ?;
+                                    COMMIT TRANSACTION;
+                                    SELECT 0 AS reward_granted, NULL AS link;
+                                END
+                            END TRY
+                            BEGIN CATCH
+                                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                                THROW;
+                            END CATCH
+                            """
+                    res = await db.execute_query_single(db_reward_tx, (
+                    required_invites, inviter_id, gift_package_id, inviter_id,
+                    required_invites, inviter_id))
+                    if res and res['reward_granted']:
+                        response_data.update(
+                            {"reward_granted": True, "link": res['link'],
+                             "current_points": current_points - required_invites})
+                    else:
+                        response_data["out_of_stock"] = True
 
-            res = await db.execute_query_single(transaction_query, params)
-            if res:
-                res['inviter_telegram_id'] = inviter_tg_id
-            return res
+            return response_data
+
         except Exception as e:
             logger.error(
                 f"Error completing referral for {referee_telegram_id}: {e}")
             return None
+
+        async def verify_user_joined(self, referee_telegram_id: int) -> bool:
+            """تغییر وضعیت رفرال از PENDING به JOINED پس از تایید عضویت در کانال"""
+            try:
+                check_query = "SELECT id FROM referrals WHERE referee_telegram_id = ? AND status = 'PENDING'"
+                ref = await db.execute_query_single(check_query,
+                                                    (referee_telegram_id,))
+                if ref:
+                    update_query = "UPDATE referrals SET status = 'JOINED' WHERE referee_telegram_id = ? AND status = 'PENDING'"
+                    await db.execute_non_query(update_query,
+                                               (referee_telegram_id,))
+                    return True
+                return False
+            except Exception as e:
+                logger.error(
+                    f"Error verifying user join in referrals for {referee_telegram_id}: {e}")
+                return False
+
+        async def process_referral_on_purchase(self,
+                                               referee_telegram_id: int) -> \
+        Optional[Dict[str, Any]]:
+            """بررسی دیتابیس در زمان خرید؛ اگر اولین خرید زیرمجموعه باشد، وضعیت COMPLETED شده و ۱ امتیاز به دعوت‌کننده تخصیص می‌یابد."""
+            try:
+                # بررسی اینکه آیا کاربر زیرمجموعه تایید شده هست و هنوز امتیازاش آزاد نشده یا خیر
+                query_check = "SELECT inviter_id FROM referrals WHERE referee_telegram_id = ? AND status = 'JOINED'"
+                referral = await db.execute_query_single(query_check,
+                                                         (referee_telegram_id,))
+                if not referral:
+                    return None
+
+                inviter_id = referral['inviter_id']
+
+                transaction_query = """
+                BEGIN TRANSACTION;
+                BEGIN TRY
+                    -- تغییر وضعیت رفرال به COMPLETED برای سوختن دفعات بعدی خرید
+                    UPDATE referrals 
+                    SET status = 'COMPLETED', completed_at = GETDATE() 
+                    WHERE referee_telegram_id = ? AND status = 'JOINED';
+
+                    -- افزایش امتیازات فعلی و کل دعوت‌های کاربر دعوت‌کننده
+                    IF EXISTS (SELECT 1 FROM user_referral_stats WHERE user_id = ?)
+                    BEGIN
+                        UPDATE user_referral_stats 
+                        SET current_points = current_points + 1, total_invites = total_invites + 1 
+                        WHERE user_id = ?;
+                    END
+                    ELSE
+                    BEGIN
+                        INSERT INTO user_referral_stats (user_id, current_points, total_invites) 
+                        VALUES (?, 1, 1);
+                    END
+
+                    COMMIT TRANSACTION;
+                    SELECT 1 AS success;
+                END TRY
+                BEGIN CATCH
+                    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                    THROW;
+                END CATCH
+                """
+                res = await db.execute_query_single(transaction_query, (
+                referee_telegram_id, inviter_id, inviter_id, inviter_id))
+                if res and res['success'] == 1:
+                    # واکشی تلگرام‌آیدی دعوت‌کننده جهت ارسال نوتیفیکیشن لحظه‌ای
+                    inviter_user = await db.execute_query_single(
+                        "SELECT telegram_id FROM users WHERE id = ?",
+                        (inviter_id,))
+                    return {"inviter_telegram_id": inviter_user[
+                        'telegram_id'] if inviter_user else None}
+                return None
+            except Exception as e:
+                logger.error(
+                    f"Error processing referral points on purchase for {referee_telegram_id}: {e}")
+                return None

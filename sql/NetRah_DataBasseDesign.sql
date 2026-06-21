@@ -30,21 +30,18 @@ CREATE TABLE users
 );
 GO
 
-CREATE TABLE packages
-(
-    id INT IDENTITY(1,1) PRIMARY KEY,
-    title NVARCHAR(100) NOT NULL,
-    volume_mb INT NOT NULL,
-    price_rial BIGINT NOT NULL,
-    is_test_package BIT NOT NULL 
-        CONSTRAINT DF_Packages_IsTestPackage DEFAULT (0),
-    is_active BIT NOT NULL 
-        CONSTRAINT DF_Packages_IsActive DEFAULT (1),
-    is_gift_package BIT NOT NULL 
-        CONSTRAINT DF_Packages_IsGiftPackage DEFAULT (0), 
-    created_at DATETIME2 NOT NULL 
-        CONSTRAINT DF_Packages_CreatedAt DEFAULT (GETDATE())
-);
+CREATE TABLE packages (
+  id INT IDENTITY
+ ,title NVARCHAR(100) NOT NULL
+ ,volume_mb INT NOT NULL
+ ,price_rial BIGINT NOT NULL
+ ,is_test_package BIT NOT NULL CONSTRAINT DF_Packages_IsTestPackage DEFAULT (0)
+ ,is_active BIT NOT NULL CONSTRAINT DF_Packages_IsActive DEFAULT (1)
+ ,created_at DATETIME2 NOT NULL CONSTRAINT DF_Packages_CreatedAt DEFAULT (GETDATE())
+ ,is_gift_package BIT NOT NULL CONSTRAINT DF_Packages_IsGiftPackage DEFAULT (0)
+ ,volume_gb DECIMAL(10, 4) NOT NULL CONSTRAINT DF_Packages_VolumeGB DEFAULT (0)
+ ,PRIMARY KEY CLUSTERED (id)
+) ON [PRIMARY]
 GO
 
 -- ==========================================

@@ -84,3 +84,22 @@ class UserService:
         query = "SELECT id FROM users WHERE referral_token = ?"
         result = await db.execute_query_single(query, (token,))
         return result['id'] if result else None
+
+    async def get_user_by_id(self, userId):
+        try:
+            query = """SELECT
+                                id
+                               ,telegram_id
+                               ,username
+                               ,first_name
+                               ,balance
+                               ,has_used_test_package
+                               ,is_banned
+                               ,created_at
+                               ,referral_token
+                              FROM dbo.users WHERE id = ?"""
+            return  await db.execute_query_single(query,(userId))
+        except Exception as e:
+            logger.error(
+                f"Error fetching Info for user_id {userId}: {e}")
+            raise e

@@ -5,7 +5,7 @@ __pycache__/
 /config.py
 # C extensions
 *.so
-
+token_cache.json
 # Distribution / packaging
 .Python
 build/

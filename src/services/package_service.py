@@ -13,7 +13,7 @@ class PackageService:
         """
         try:
             query = (
-                "SELECT id, title, volume_mb, price_rial "
+                "SELECT id, title, volume_mb, volume_gb, price_rial "
                 "FROM packages "
                 "WHERE is_active = 1 AND is_test_package = 0 AND is_gift_package = 0"
             )
@@ -28,7 +28,7 @@ class PackageService:
             Get Package By Id
         """
         try:
-            query = "SELECT id, title, volume_mb, price_rial, is_test_package, is_active FROM packages WHERE id = ?"
+            query = "SELECT id, title, volume_mb, volume_gb, price_rial, is_test_package, is_active FROM packages WHERE id = ?"
             return await db.execute_query_single(query, (package_id,))
         except Exception as e:
             logger.error(f"Error fetching package by id {package_id}: {e}")
