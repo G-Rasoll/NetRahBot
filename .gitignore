@@ -6,6 +6,7 @@ __pycache__/
 # C extensions
 *.so
 token_cache.json
+test_payment_simulator.py
 # Distribution / packaging
 .Python
 build/

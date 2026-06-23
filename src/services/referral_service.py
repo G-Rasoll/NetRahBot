@@ -238,77 +238,148 @@ class ReferralService:
                 f"Error completing referral for {referee_telegram_id}: {e}")
             return None
 
-        async def verify_user_joined(self, referee_telegram_id: int) -> bool:
-            """تغییر وضعیت رفرال از PENDING به JOINED پس از تایید عضویت در کانال"""
-            try:
-                check_query = "SELECT id FROM referrals WHERE referee_telegram_id = ? AND status = 'PENDING'"
-                ref = await db.execute_query_single(check_query,
-                                                    (referee_telegram_id,))
-                if ref:
-                    update_query = "UPDATE referrals SET status = 'JOINED' WHERE referee_telegram_id = ? AND status = 'PENDING'"
-                    await db.execute_non_query(update_query,
-                                               (referee_telegram_id,))
-                    return True
-                return False
-            except Exception as e:
-                logger.error(
-                    f"Error verifying user join in referrals for {referee_telegram_id}: {e}")
-                return False
+    async def verify_user_joined(self, referee_telegram_id: int) -> \
+    Optional[int]:
+        """
+        تغییر وضعیت رفرال از PENDING به JOINED پس از تایید عضویت در کانال
+        و بازگرداندن آیدی تلگرام دعوت‌کننده جهت ارسال نوتیفیکیشن
+        """
+        try:
+            check_query = """
+                SELECT r.id, u.telegram_id as inviter_telegram_id 
+                FROM referrals r
+                JOIN users u ON r.inviter_id = u.id
+                WHERE r.referee_telegram_id = ? AND r.status = 'PENDING'
+            """
+            ref = await db.execute_query_single(check_query,
+                                                (referee_telegram_id,))
 
-        async def process_referral_on_purchase(self,
-                                               referee_telegram_id: int) -> \
-        Optional[Dict[str, Any]]:
-            """بررسی دیتابیس در زمان خرید؛ اگر اولین خرید زیرمجموعه باشد، وضعیت COMPLETED شده و ۱ امتیاز به دعوت‌کننده تخصیص می‌یابد."""
-            try:
-                # بررسی اینکه آیا کاربر زیرمجموعه تایید شده هست و هنوز امتیازاش آزاد نشده یا خیر
-                query_check = "SELECT inviter_id FROM referrals WHERE referee_telegram_id = ? AND status = 'JOINED'"
-                referral = await db.execute_query_single(query_check,
-                                                         (referee_telegram_id,))
-                if not referral:
-                    return None
+            if ref:
+                update_query = "UPDATE referrals SET status = 'JOINED' WHERE referee_telegram_id = ? AND status = 'PENDING'"
+                await db.execute_non_query(update_query,
+                                           (referee_telegram_id,))
+                return ref['inviter_telegram_id']
 
-                inviter_id = referral['inviter_id']
+            return None
+        except Exception as e:
+            logger.error(
+                f"Error verifying user join in referrals for {referee_telegram_id}: {e}")
+            return None
 
-                transaction_query = """
+    async def claim_reward(self, user_id: int, telegram_id: int) -> Dict[
+        str, Any]:
+        """
+        تخلیه امتیازات کاربر، ساخت کانفیگ معادل حجم امتیازات و ثبت در دیتابیس به صورت اتمیک
+        """
+        try:
+            stats_query = "SELECT current_points FROM user_referral_stats WHERE user_id = ?"
+            stats = await db.execute_query_single(stats_query, (user_id,))
+
+            if not stats or stats['current_points'] <= 0:
+                return {"status": "NO_POINTS"}
+
+            points = stats['current_points']
+
+            # هر امتیاز معادل ۱ گیگابایت (تبدیل به float برای پنل)
+            limit_gb = float(points)
+
+            # ساخت کانفیگ در پنل
+            generated_link = await panel_api.create_user_config(
+                sub_type="Gift", telegram_id=telegram_id, limit_gb=limit_gb)
+
+            # تراکنش اتمیک برای ثبت هدیه و صفر کردن امتیاز
+            reward_tx = """
+            BEGIN TRY
                 BEGIN TRANSACTION;
-                BEGIN TRY
-                    -- تغییر وضعیت رفرال به COMPLETED برای سوختن دفعات بعدی خرید
-                    UPDATE referrals 
-                    SET status = 'COMPLETED', completed_at = GETDATE() 
-                    WHERE referee_telegram_id = ? AND status = 'JOINED';
 
-                    -- افزایش امتیازات فعلی و کل دعوت‌های کاربر دعوت‌کننده
-                    IF EXISTS (SELECT 1 FROM user_referral_stats WHERE user_id = ?)
-                    BEGIN
-                        UPDATE user_referral_stats 
-                        SET current_points = current_points + 1, total_invites = total_invites + 1 
-                        WHERE user_id = ?;
-                    END
-                    ELSE
-                    BEGIN
-                        INSERT INTO user_referral_stats (user_id, current_points, total_invites) 
-                        VALUES (?, 1, 1);
-                    END
+                -- صفر کردن امتیاز کاربر
+                UPDATE user_referral_stats SET current_points = 0 WHERE user_id = ?;
 
-                    COMMIT TRANSACTION;
-                    SELECT 1 AS success;
-                END TRY
-                BEGIN CATCH
-                    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-                    THROW;
-                END CATCH
-                """
-                res = await db.execute_query_single(transaction_query, (
-                referee_telegram_id, inviter_id, inviter_id, inviter_id))
-                if res and res['success'] == 1:
-                    # واکشی تلگرام‌آیدی دعوت‌کننده جهت ارسال نوتیفیکیشن لحظه‌ای
-                    inviter_user = await db.execute_query_single(
-                        "SELECT telegram_id FROM users WHERE id = ?",
-                        (inviter_id,))
-                    return {"inviter_telegram_id": inviter_user[
-                        'telegram_id'] if inviter_user else None}
+                -- پیدا کردن آیدی پکیج هدیه (برای رفرنس انبار)
+                DECLARE @GiftPkgId INT;
+                SELECT TOP 1 @GiftPkgId = id FROM packages WHERE is_gift_package = 1;
+
+                -- ثبت کانفیگ جدید در انبار
+                INSERT INTO subscription_inventory (package_id, subscription_link, is_assigned, created_at)
+                VALUES (@GiftPkgId, ?, 1, GETDATE());
+
+                DECLARE @InventoryId INT = SCOPE_IDENTITY();
+
+                -- تخصیص هدیه به کاربر در لیست سرویس‌های من
+                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
+                VALUES (?, @InventoryId, NULL, GETDATE());
+
+                COMMIT TRANSACTION;
+                SELECT 1 AS success;
+            END TRY
+            BEGIN CATCH
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                THROW;
+            END CATCH
+            """
+            await db.execute_query_single(reward_tx, (
+            user_id, generated_link, user_id))
+            return {"status": "SUCCESS", "link": generated_link,
+                    "gb": points}
+
+        except Exception as e:
+            logger.error(f"Error claiming reward for user {user_id}: {e}")
+            return {"status": "ERROR"}
+
+    async def process_referral_on_purchase(self,
+                                           referee_telegram_id: int) -> \
+    Optional[Dict[str, Any]]:
+        """بررسی دیتابیس در زمان خرید؛ اگر اولین خرید زیرمجموعه باشد، وضعیت COMPLETED شده و ۱ امتیاز به دعوت‌کننده تخصیص می‌یابد."""
+        try:
+            # بررسی اینکه آیا کاربر زیرمجموعه تایید شده هست و هنوز امتیازاش آزاد نشده یا خیر
+            query_check = "SELECT inviter_id FROM referrals WHERE referee_telegram_id = ? AND status = 'JOINED'"
+            referral = await db.execute_query_single(query_check,
+                                                     (referee_telegram_id,))
+            if not referral:
                 return None
-            except Exception as e:
-                logger.error(
-                    f"Error processing referral points on purchase for {referee_telegram_id}: {e}")
-                return None
+
+            inviter_id = referral['inviter_id']
+
+            transaction_query = """
+            BEGIN TRANSACTION;
+            BEGIN TRY
+                -- تغییر وضعیت رفرال به COMPLETED برای سوختن دفعات بعدی خرید
+                UPDATE referrals 
+                SET status = 'COMPLETED', completed_at = GETDATE() 
+                WHERE referee_telegram_id = ? AND status = 'JOINED';
+
+                -- افزایش امتیازات فعلی و کل دعوت‌های کاربر دعوت‌کننده
+                IF EXISTS (SELECT 1 FROM user_referral_stats WHERE user_id = ?)
+                BEGIN
+                    UPDATE user_referral_stats 
+                    SET current_points = current_points + 1, total_invites = total_invites + 1 
+                    WHERE user_id = ?;
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO user_referral_stats (user_id, current_points, total_invites) 
+                    VALUES (?, 1, 1);
+                END
+
+                COMMIT TRANSACTION;
+                SELECT 1 AS success;
+            END TRY
+            BEGIN CATCH
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                THROW;
+            END CATCH
+            """
+            res = await db.execute_query_single(transaction_query, (
+            referee_telegram_id, inviter_id, inviter_id, inviter_id))
+            if res and res['success'] == 1:
+                # واکشی تلگرام‌آیدی دعوت‌کننده جهت ارسال نوتیفیکیشن لحظه‌ای
+                inviter_user = await db.execute_query_single(
+                    "SELECT telegram_id FROM users WHERE id = ?",
+                    (inviter_id,))
+                return {"inviter_telegram_id": inviter_user[
+                    'telegram_id'] if inviter_user else None}
+            return None
+        except Exception as e:
+            logger.error(
+                f"Error processing referral points on purchase for {referee_telegram_id}: {e}")
+            return None

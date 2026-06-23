@@ -47,3 +47,10 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
         ["👥 زیرمجموعه‌گیری و دعوت"]
     ]
     return ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+
+def get_referral_keyboard() -> InlineKeyboardMarkup:
+
+    keyboard = [
+        [InlineKeyboardButton("🎁 دریافت سرویس هدیه", callback_data="claim_referral_reward")]
+    ]
+    return InlineKeyboardMarkup(keyboard)

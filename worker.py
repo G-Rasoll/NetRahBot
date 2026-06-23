@@ -4,6 +4,7 @@ from telegram import Bot
 from config import BOT_TOKEN
 from src.infrastructure.database import db
 from src.services.order_service import OrderService
+from src.services.referral_service import ReferralService
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -16,6 +17,8 @@ async def run_payment_worker():
     logger.info(
         "⚡ NetRah Blockchain Monitoring Worker Engine has started successfully.")
     order_service = OrderService()
+    referral_service = ReferralService()  # نمونه‌سازی سرویس رفرال در ورکر
+
     # ساخت یک کلاینت تلگرام مستقل برای ورکر جهت ارسال پیام بدون دخالت دادن پولینگ ربات
     bot = Bot(token=BOT_TOKEN)
 
@@ -73,6 +76,25 @@ async def run_payment_worker():
                             logger.info(
                                 f"Successfully delivered subscription to user telegram: {tg_id}")
 
+                            # ----------------------------------------------------
+                            # پردازش اهدای امتیاز دعوت در صورت خرید اول زیرمجموعه
+                            # ----------------------------------------------------
+                            ref_res = await referral_service.process_referral_on_purchase(
+                                tg_id)
+                            if ref_res and ref_res.get("inviter_telegram_id"):
+                                inviter_tg = ref_res["inviter_telegram_id"]
+                                try:
+                                    await bot.send_message(
+                                        chat_id=inviter_tg,
+                                        text=f"🎉 **تبریک! یک امتیاز دعوت جدید دریافت کردید.**\n\n"
+                                             f"کاربری که با لینک شما عضو شده بود، اولین خرید خود را انجام داد.\n"
+                                             f"برای تبدیل امتیاز خود به کانفیگ هدیه، به منوی **👥 زیرمجموعه‌گیری و دعوت** در ربات مراجعه کنید.",
+                                        parse_mode="Markdown"
+                                    )
+                                except Exception as e:
+                                    logger.error(
+                                        f"Failed to notify inviter {inviter_tg} about reward point: {e}")
+
                         elif delivery["status"] == "OUT_OF_STOCK":
                             error_msg = (
                                 f"⚠️ **توجه! پرداخت شما دریافت شد اما انبار خالی است**\n\n"
@@ -91,8 +113,7 @@ async def run_payment_worker():
 
         except Exception as e:
             logger.error(f"Error in worker main loop event: {e}")
-            await asyncio.sleep(
-                10)  # در صورت بروز خطای جدی، ۱۰ ثانیه صبر کن و دوباره ادامه بده
+            await asyncio.sleep(10)
 
 
 if __name__ == "__main__":

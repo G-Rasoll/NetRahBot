@@ -8,7 +8,7 @@ from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard
 from config import INVOICE_EXPIRY_MINUTES
 from config import INVOICE_EXPIRY_MINUTES, REQUIRED_CHANNEL, CHANNEL_LINK
 from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard, \
-    get_join_keyboard, get_main_menu_keyboard
+    get_join_keyboard, get_main_menu_keyboard, get_referral_keyboard
 from src.services.referral_service import ReferralService
 
 logger = logging.getLogger(__name__)
@@ -112,31 +112,27 @@ async def menu_handler(update: Update,
             await update.message.reply_text("⚠️ خطا در لود کردن لیست پکیج‌ها.")
 
     elif text == "👥 زیرمجموعه‌گیری و دعوت":
+
         try:
             stats = await referral_service.get_user_referral_stats(internal_id)
-            bot_info = await context.bot.get_me()
-
             user_token = await user_service.get_user_referral_token(internal_id)
             invite_link = f"https://t.me/NetRahBot?start=ref_{user_token}"
-
             msg = (
                 f"👥 **سیستم زیرمجموعه‌گیری و دریافت هدیه نت‌راه**\n\n"
-                f"با دعوت از دوستان خود به ربات، کانفیگ رایگان بگیرید! 🎁\n\n"
+                f"با دعوت از دوستان خود به ربات و **اولین خرید آنها**، کانفیگ رایگان بگیرید! 🎁\n\n"
                 f"🔗 **لینک دعوت اختصاصی شما:**\n"
                 f"`{invite_link}`\n\n"
                 f"📊 **آمار دعوت‌های شما:**\n"
-                f"▫️ تعداد کل دعوت‌ها: `{stats['total_invites']}` نفر\n"
-                f"▫️ امتیازهای فعال فعلی: `{stats['current_points']}` امتیاز\n"
-                f"🎯 امتیاز مورد نیاز برای هدیه: `{stats['required_invites']}` امتیاز\n\n"
-                f"💡 **راهنما:** به ازای هر `{stats['required_invites']}` نفری که با لینک شما وارد ربات شده و عضویت کانال را تایید کنند، سیستم به صورت کاملاً خودکار **یک کانفیگ ۱ گیگابایتی رایگان** صادر کرده و برای شما ارسال می‌کند."
+                f"▫️ تعداد کل دعوت‌ها (عضو شده): `{stats['total_invites']}` نفر\n"
+                f"▫️ امتیازهای فعال فعلی (خریدهای موفق): `{stats['current_points']}` امتیاز\n\n"
+                f"💡 **راهنما:** به ازای **اولین خرید** هر نفری که با لینک شما وارد ربات شده، ۱ امتیاز می‌گیرید. شما می‌توانید هر زمان که مایل بودید، با کلیک روی دکمه زیر، امتیازهای خود را به کانفیگ هدیه تبدیل کنید (هر ۱ امتیاز = ۱ گیگابایت)."
             )
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            await update.message.reply_text(msg, reply_markup=get_referral_keyboard(),
+                                            parse_mode="Markdown")
+
         except Exception as e:
             logger.error(f"Error displaying referral menu: {e}")
-            await update.message.reply_text(
-                "⚠️ خطایی در بارگذاری منوی دعوت رخ داد.")
-
-
+            await update.message.reply_text("⚠️ خطایی در بارگذاری منوی دعوت رخ داد.")
 
     elif text == "📊 پشتیبانی و راهنما":
         await  update.message.reply_text(
@@ -265,6 +261,12 @@ async def package_selection_callback(update: Update,
 
     try:
         # صدور فاکتور
+        logger.warning(
+            f"[INVOICE DEBUG] "
+            f"TG_ID={update.effective_user.id} "
+            f"DB_ID={user_internal_id} "
+            f"USERNAME={update.effective_user.username}"
+        )
         invoice_data = await order_service.create_invoice(user_internal_id,
                                                           package_id)
         if not invoice_data:
@@ -301,9 +303,7 @@ async def is_user_member(bot, telegram_id: int) -> bool:
             f"Error checking channel membership for {telegram_id}: {e}")
         return False
 
-
-async def verify_join_callback(update: Update,
-                               context: ContextTypes.DEFAULT_TYPE) -> None:
+async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     tg_user = update.effective_user
     if not tg_user:
@@ -315,59 +315,84 @@ async def verify_join_callback(update: Update,
 
         try:
             internal_id = await user_service.register_or_update_user(
-                telegram_id=tg_user.id, username=tg_user.username,
-                first_name=tg_user.first_name
+                telegram_id=tg_user.id, username=tg_user.username, first_name=tg_user.first_name
             )
             if internal_id == -1:
-                await query.message.reply_text(
-                    "❌ حساب کاربری شما در این ربات مسدود شده است.")
+                await query.message.reply_text("❌ حساب کاربری شما در این ربات مسدود شده است.")
                 return
 
             context.user_data['internal_db_id'] = internal_id
 
-            # --- بخش جدید: بررسی و ارتقای سطح سیستم دعوت پاداش دار ---
-            ref_res = await referral_service.complete_referral_if_exists(
-                tg_user.id)
-            if ref_res and ref_res.get("success"):
-                inviter_chat_id = ref_res["inviter_telegram_id"]
-                if ref_res["reward_granted"]:
-                    # حد نصاب پر شد و کانفیگ هدیه صادر شد
+            # بررسی سیستم دعوت و ارسال پیام اطلاع‌رسانی به دعوت‌کننده (بدون تخصیص امتیاز)
+            inviter_chat_id = await referral_service.verify_user_joined(tg_user.id)
+            if inviter_chat_id:
+                try:
                     await context.bot.send_message(
                         chat_id=inviter_chat_id,
-                        text=f"🎉 **تبریک! تعداد دعوت‌های شما به حد نصاب رسید.**\n\n"
-                             f"🎁 یک کانفیگ هدیه ۱ گیگابایتی اختصاصی برای شما صادر و به منوی «👤 سرویس‌های من» شما اضافه شد:\n"
-                             f"`{ref_res['link']}`\n\n"
-                             f"میتوانید با دعوت دوستان بیشتر، مجدداً هدیه بگیرید!",
+                        text=f"👤 **یک کاربر با لینک دعوت شما عضو ربات شد!**\n\n"
+                             f"⏳ به محض اینکه این کاربر **اولین خرید موفق** خود را انجام دهد، ۱ امتیاز هدیه به صورت خودکار به حساب شما منظور خواهد شد.",
                         parse_mode="Markdown"
                     )
-                elif ref_res["out_of_stock"]:
-                    # امتیاز ثبت شد اما انبار خالی بود
-                    await context.bot.send_message(
-                        chat_id=inviter_chat_id,
-                        text=f"👤 یک کاربر جدید با دعوت شما به ربات پیوست!\n"
-                             f"⚠️ امتیاز شما اضافه شد اما متاسفانه انبار کانفیگ‌های هدیه خالی است. مدیریت مطلع شد و به محض شارژ انبار، هدیه شما ارسال خواهد شد.",
-                        parse_mode="Markdown"
-                    )
-                else:
-                    # فقط امتیاز اضافه شد ولی هنوز به حد نصاب نرسیده
-                    await context.bot.send_message(
-                        chat_id=inviter_chat_id,
-                        text=f"👤 **یک کاربر جدید با لینک دعوت شما عضو ربات شد!**\n"
-                             f"📊 وضعیت امتیاز شما: `{ref_res['current_points']}/{ref_res['required_invites']}`",
-                        parse_mode="Markdown"
-                    )
-            # ----------------------------------------------------
+                except Exception as e:
+                    logger.error(f"Failed to notify inviter about join: {e}")
 
             markup = get_main_menu_keyboard()
             welcome_text = f"خوش آمدید! 🚀\nمنوی ربات **نت‌راه** برای شما فعال شد."
-            await query.message.reply_text(welcome_text, reply_markup=markup,
-                                           parse_mode="Markdown")
+            await query.message.reply_text(welcome_text, reply_markup=markup, parse_mode="Markdown")
             await query.message.delete()
 
         except Exception as e:
             logger.error(f"Error in verify_join_callback onboarding: {e}")
             await query.message.reply_text("⚠️ خطا در ارتباط با سرور.")
     else:
-        await query.answer(
-            "❌ شما هنوز عضو کانال نشده‌اید. لطفاً ابتدا عضو شوید!",
-            show_alert=True)
+        await query.answer("❌ شما هنوز عضو کانال نشده‌اید. لطفاً ابتدا عضو شوید!", show_alert=True)
+
+
+async def claim_reward_callback(update: Update,
+                                context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    user_tg_id = update.effective_user.id
+    if not await is_user_member(context.bot, user_tg_id):
+        from src.bot.keyboards import get_join_keyboard
+        kb = get_join_keyboard(CHANNEL_LINK)
+        await query.message.reply_text(
+            "❌ برای دریافت هدیه، باید عضو کانال باشید:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        return
+
+    internal_id = context.user_data.get('internal_db_id')
+    if not internal_id:
+        await query.message.reply_text(
+            "⚠️ جلسه کاری شما منقضی شده است. لطفا ربات را مجدداً /start کنید.")
+        return
+
+    loading_msg = await query.message.reply_text(
+        "⏳ در حال بررسی امتیازات و ساخت کانفیگ هدیه اختصاصی شما در پنل...")
+
+    try:
+        result = await referral_service.claim_reward(internal_id, user_tg_id)
+
+        if result["status"] == "NO_POINTS":
+            await loading_msg.edit_text(
+                "❌ شما در حال حاضر هیچ امتیاز فعالی برای دریافت هدیه ندارید.")
+
+        elif result["status"] == "SUCCESS":
+            success_text = (
+                f"🎉 **هدیه شما با موفقیت صادر شد!**\n\n"
+                f"📦 **حجم سرویس:** `{result['gb']}` گیگابایت\n"
+                f"🔗 **لینک اتصال اختصاصی شما:**\n"
+                f"`{result['link']}`\n\n"
+                f"💡 امتیازهای شما صفر شد. این سرویس به منوی «👤 سرویس‌های من» نیز اضافه گردید. با دعوت و خرید دوستان جدید می‌توانید دوباره هدیه بگیرید."
+            )
+            await loading_msg.edit_text(success_text, parse_mode="Markdown")
+
+        else:
+            await loading_msg.edit_text(
+                "⚠️ خطایی در ارتباط با سرور پنل یا دیتابیس رخ داد. لطفا به پشتیبانی اطلاع دهید.")
+
+    except Exception as e:
+        logger.error(f"Error in claim_reward_callback: {e}")
+        await loading_msg.edit_text("⚠️ خطای سیستمی در پردازش هدیه رخ داد.")

@@ -2,11 +2,9 @@ import logging
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, \
     CallbackQueryHandler, filters
 from config import BOT_TOKEN
-from src.bot.handlers import start_handler, menu_handler, \
-    package_selection_callback
 import socket
 from src.bot.handlers import start_handler, menu_handler, \
-    package_selection_callback, verify_join_callback
+    package_selection_callback, verify_join_callback, claim_reward_callback
 
 
 socket.setdefaulttimeout(30)
@@ -33,6 +31,9 @@ def main() -> None:
 
         application.add_handler(CallbackQueryHandler(package_selection_callback,
                                                      pattern="^buy_pkg:"))
+
+        application.add_handler(CallbackQueryHandler(claim_reward_callback,
+                                             pattern="^claim_referral_reward$"))
         application.add_handler(
             MessageHandler(PRIVATE & filters.TEXT & ~filters.COMMAND, menu_handler))
 

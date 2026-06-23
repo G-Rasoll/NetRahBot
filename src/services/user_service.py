@@ -24,14 +24,29 @@ class UserService:
                                            (username, first_name, telegram_id))
                 return user['id']
             token = secrets.token_hex(6)
-            query_insert = (
-                "INSERT INTO users (telegram_id, username, first_name, balance, has_used_test_package, is_banned, referral_token) "
-                "VALUES (?, ?, ?, 0.0, 0, 0, ?)"
-            )
-            internal_id = await db.execute_non_query(query_insert, (
+            query_insert = """INSERT INTO users(
+                                                telegram_id,
+                                                username,
+                                                first_name,
+                                                balance,
+                                                has_used_test_package,
+                                                is_banned,
+                                                referral_token
+                                            )
+                                            OUTPUT INSERTED.id
+                                            VALUES
+                                            (
+                                                ?, ?, ?, 0.0, 0, 0, ?
+                                            )
+                                            """
+            internal_id = await db.execute_insert_return_id(query_insert, (
                 telegram_id, username, first_name, token))
             logger.info(
                 f"New user registered: {telegram_id} with internal ID: {internal_id} and token: {token}")
+            logger.warning(
+                f"REGISTER RESULT => {internal_id} "
+                f"type={type(internal_id)}"
+            )
             return internal_id
 
         except Exception as e:
