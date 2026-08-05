@@ -118,3 +118,7 @@ class UserService:
             logger.error(
                 f"Error fetching Info for user_id {userId}: {e}")
             raise e
+
+    async def get_admin_info(self, user_id: int) -> dict | None:
+        query = "SELECT brand_name FROM admins WHERE user_id = ?"
+        return await db.execute_query_single(query, (user_id,))

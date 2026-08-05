@@ -54,3 +54,11 @@ def get_referral_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🎁 دریافت سرویس هدیه", callback_data="claim_referral_reward")]
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def get_admin_config_name_keyboard() -> ReplyKeyboardMarkup:
+
+    reply_keyboard = [
+        ["🎲 ایجاد نام تصادفی (Random)"],
+        ["❌ لغو عملیات"]
+    ]
+    return ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True, one_time_keyboard=True)

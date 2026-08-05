@@ -141,6 +141,17 @@ CREATE TABLE referrals
 GO
 
 
+CREATE TABLE admins
+(
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    user_id INT NOT NULL UNIQUE,
+    brand_name NVARCHAR(100) NOT NULL CONSTRAINT DF_Admins_Brand DEFAULT ('NetRah'),
+    added_at DATETIME2 NOT NULL CONSTRAINT DF_Admins_AddedAt DEFAULT (GETDATE()),
+    
+    CONSTRAINT FK_Admins_Users FOREIGN KEY (user_id) REFERENCES users(id)
+);
+GO
+
 -- ==========================================
 -- ۳. ساخت شاخص‌ها (Indexes) بهینه‌سازی و امنیت
 -- ==========================================

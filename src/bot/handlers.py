@@ -4,11 +4,12 @@ from telegram.ext import ContextTypes
 from src.services.user_service import UserService
 from src.services.package_service import PackageService
 from src.services.order_service import OrderService
-from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard
-from config import INVOICE_EXPIRY_MINUTES
+from config import INVOICE_EXPIRY_MINUTES, ADMIN_IDS
 from config import INVOICE_EXPIRY_MINUTES, REQUIRED_CHANNEL, CHANNEL_LINK
 from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard, \
-    get_join_keyboard, get_main_menu_keyboard, get_referral_keyboard
+    get_join_keyboard, get_main_menu_keyboard, get_referral_keyboard, \
+    get_admin_config_name_keyboard
+import re
 from src.services.referral_service import ReferralService
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,6 @@ async def menu_handler(update: Update,
         )
         return
 
-    # اطمینان از وجود آیدی داخلی در وضعیت جاری Session
     internal_id = context.user_data.get('internal_db_id')
     if not internal_id:
         internal_id = await user_service.register_or_update_user(
@@ -94,6 +94,88 @@ async def menu_handler(update: Update,
             first_name=update.effective_user.first_name
         )
         context.user_data['internal_db_id'] = internal_id
+
+    if 'pending_manual_config' in context.user_data:
+        pending_data = context.user_data['pending_manual_config']
+
+        if text == "❌ لغو عملیات":
+            del context.user_data['pending_manual_config']
+            await update.message.reply_text("عملیات لغو شد.",
+                                            reply_markup=get_main_menu_keyboard())
+            return
+
+        volume_gb = pending_data['gb']
+        brand_name = pending_data['brand']
+        custom_name = None
+
+        if text != "🎲 ایجاد نام تصادفی (Random)":
+            safe_name = re.sub(r'[^a-zA-Z0-9_]', '', text.replace(" ", "_"))
+            if not safe_name:
+                await update.message.reply_text(
+                    "⚠️ لطفاً نام را فقط با حروف انگلیسی تایپ کنید، یا دکمه تصادفی را بزنید:")
+                return
+            custom_name = safe_name[:20]  # محدود کردن طول نام جهت امنیت پنل
+
+        loading_msg = await update.message.reply_text(
+            f"⏳ در حال ساخت کانفیگ تحت برند `{brand_name}`...")
+
+        try:
+            res = await order_service.create_manual_admin_config(
+                internal_id, user_tg_id, volume_gb, brand_name, custom_name
+            )
+            if res["status"] == "SUCCESS":
+                success_text = (
+                    f"✅ **کانفیگ دستی با موفقیت ساخته شد!**\n\n"
+                    f"📊 **حجم:** `{volume_gb}` گیگابایت\n"
+                    f"🏢 **برند:** `{brand_name}`\n"
+                    f"🔑 **کد رهگیری:** `{res['memo']}`\n\n"
+                    f"🔗 **لینک اتصال اختصاصی:**\n`{res['link']}`"
+                )
+                await loading_msg.edit_text(success_text,
+                                            parse_mode="Markdown")
+                await update.message.reply_text("بازگشت به منوی اصلی:",
+                                                reply_markup=get_main_menu_keyboard())
+            else:
+                await loading_msg.edit_text(
+                    "❌ خطایی در پنل یا دیتابیس رخ داد.")
+                await update.message.reply_text("منوی اصلی:",
+                                                reply_markup=get_main_menu_keyboard())
+        except Exception as e:
+            logger.error(f"Error generating manual config in handler: {e}")
+            await loading_msg.edit_text("⚠️ خطای غیرمنتظره در ساخت کانفیگ.")
+        finally:
+            if 'pending_manual_config' in context.user_data:
+                del context.user_data['pending_manual_config']
+        return
+
+    # ------------------------------------------------
+    # --- بررسی درخواست جدید ساخت کانفیگ توسط ادمین ---
+    is_numeric = False
+    volume_gb = 0.0
+    try:
+        volume_gb = float(text)
+        if volume_gb > 0:
+            is_numeric = True
+    except ValueError:
+        pass
+
+    if is_numeric:
+        admin_info = await user_service.get_admin_info(internal_id)
+        if admin_info:
+            brand_name = admin_info['brand_name']
+
+            # ثبت وضعیت (State) در حافظه رم (یوزردیتا)
+            context.user_data['pending_manual_config'] = {'gb': volume_gb,
+                                                          'brand': brand_name}
+
+            await update.message.reply_text(
+                f"🛠️ شما درخواست ساخت کانفیگ `{volume_gb}` گیگابایتی برای برند **{brand_name}** را داده‌اید.\n\n"
+                f"لطفاً یک نام دلخواه (حتماً به زبان انگلیسی) برای این کانفیگ تایپ کنید تا در نام کانفیگ قرار بگیرد، یا دکمه تصادفی را بزنید:",
+                reply_markup=get_admin_config_name_keyboard(),
+                parse_mode="Markdown"
+            )
+            return
+    # ------------------------------------------------
 
     if text == "🛍️ خرید اشتراک جدید":
         try:

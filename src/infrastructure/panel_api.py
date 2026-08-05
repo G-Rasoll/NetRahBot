@@ -42,20 +42,29 @@ class PanelApiService:
                 raise Exception(
                     f"Panel Login Error: {response.status_code} - {response.text}")
 
-    def generate_random_username(self, sub_type, telegram_id) -> str:
+    def generate_random_username(self, sub_type, telegram_id,
+                                 brand_name="NetRah", custom_name=None) -> str:
         allowed_chars = string.ascii_lowercase + string.digits
         random_suffix = ''.join(secrets.choice(allowed_chars) for _ in range(6))
-        return f"NetRah_Bot_{sub_type}_{telegram_id}_{random_suffix}"
 
-    async def create_user_config(self, sub_type, telegram_id: 123,
-                                 limit_gb: float) -> str:
+        if sub_type == "Manual":
+            name_part = custom_name if custom_name else "Rnd"
+            # الگوی درخواستی: Brand_Manual_AdminUserId_Name_wypfno
+            return f"{brand_name}_Manual_{telegram_id}_{name_part}_{random_suffix}"
+
+        return f"{brand_name}_{sub_type}_{telegram_id}_{random_suffix}"
+
+    async def create_user_config(self, sub_type, telegram_id, limit_gb: float,
+                                 brand_name="NetRah", custom_name=None) -> str:
         token = await self.get_access_token()
         user_url = f"{self.base_url}/api/user"
         headers = {"Authorization": f"Bearer {token}"}
 
         data_limit_bytes = int(limit_gb * (1024 ** 3))
         username = self.generate_random_username(
-            sub_type=sub_type, telegram_id=telegram_id)
+            sub_type=sub_type, telegram_id=telegram_id,
+            brand_name=brand_name, custom_name=custom_name
+        )
 
         payload = {
             "username": username,
@@ -72,7 +81,6 @@ class PanelApiService:
             response = await client.post(user_url, json=payload,
                                          headers=headers)
 
-            # مدیریت انقضای توکن
             if response.status_code == 401:
                 if os.path.exists(self.token_file):
                     os.remove(self.token_file)
@@ -89,6 +97,5 @@ class PanelApiService:
             else:
                 raise Exception(
                     f"Config Creation Error: {response.status_code} - {response.text}")
-
 
 panel_api = PanelApiService()

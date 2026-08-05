@@ -367,3 +367,77 @@ class OrderService:
     async def handle_expired_invoices(self) -> int:
         query = "UPDATE invoices SET status_id = 4 WHERE status_id = 1 AND expires_at < GETDATE()"
         await db.execute_non_query(query)
+
+    async def create_manual_admin_config(self, admin_internal_id: int,
+                                         admin_tg_id: int, volume_gb: float,
+                                         brand_name: str,
+                                         custom_name: str = None) -> Dict[
+        str, Any]:
+        try:
+            generated_link = await panel_api.create_user_config(
+                sub_type="Manual",
+                telegram_id=admin_tg_id,
+                limit_gb=volume_gb,
+                brand_name=brand_name,
+                custom_name=custom_name
+            )
+
+            memo = f"NR-{secrets.randbelow(900000) + 100000}"
+            volume_mb = int(volume_gb * 1024)
+            pkg_snapshot_title = f"🛠️ کانفیگ دستی ادمین ({volume_gb} GB) - {brand_name}"
+
+            transaction_query = """
+            SET NOCOUNT ON;
+            BEGIN TRY
+                BEGIN TRANSACTION;
+
+                DECLARE @PkgId INT;
+                SELECT TOP 1 @PkgId = id FROM packages WHERE title = N'🛠️ کانفیگ دستی ادمین';
+
+                IF @PkgId IS NULL
+                BEGIN
+                    INSERT INTO packages (title, volume_mb, price_rial, is_test_package, is_active, is_gift_package, volume_gb)
+                    VALUES (N'🛠️ کانفیگ دستی ادمین', 0, 0, 0, 1, 0, 0);
+                    SET @PkgId = SCOPE_IDENTITY();
+                END
+
+                INSERT INTO invoices (
+                    user_id, package_id, memo, status_id, 
+                    package_title_snapshot, package_price_snapshot_rial, package_volume_snapshot_mb, 
+                    payment_currency_code, expected_payment_amount, amount_received, tx_hash, expires_at, created_at
+                ) 
+                VALUES (
+                    ?, @PkgId, ?, 3, 
+                    ?, 0, ?, 
+                    'MANUAL', 0.0, 0.0, ?, GETDATE(), GETDATE()
+                );
+                DECLARE @InvoiceId INT = SCOPE_IDENTITY();
+
+                INSERT INTO subscription_inventory (package_id, subscription_link, is_assigned, created_at)
+                VALUES (@PkgId, ?, 1, GETDATE());
+                DECLARE @InventoryId INT = SCOPE_IDENTITY();
+
+                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
+                VALUES (?, @InventoryId, @InvoiceId, GETDATE());
+
+                COMMIT TRANSACTION;
+                SELECT 1 AS success;
+            END TRY
+            BEGIN CATCH
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                THROW;
+            END CATCH
+            """
+
+            await db.execute_query_single(
+                transaction_query,
+                (admin_internal_id, memo, pkg_snapshot_title, volume_mb,
+                 None, generated_link, admin_internal_id)
+            )
+
+            return {"status": "SUCCESS", "link": generated_link, "memo": memo}
+
+        except Exception as e:
+            logger.error(
+                f"Error creating manual admin config for user {admin_internal_id}: {e}")
+            return {"status": "ERROR", "message": str(e)}
