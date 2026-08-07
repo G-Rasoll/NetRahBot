@@ -59,27 +59,30 @@ class UserService:
         result = await db.execute_query_single(query, (user_id,))
         return result['has_used_test_package'] if result else True
 
-    async def get_user_subscriptions(self, user_id: int) -> list:
-
-        try:
-            query = """
-                SELECT 
-                    p.title,
-                    p.volume_mb,
-                    p.is_test_package,
-                    si.subscription_link,
-                    us.assigned_at
-                FROM user_subscriptions us
-                JOIN subscription_inventory si ON us.inventory_id = si.id
-                JOIN packages p ON si.package_id = p.id
-                WHERE us.user_id = ?
-                ORDER BY us.assigned_at DESC
-            """
-            return await db.execute_query_all(query, (user_id,))
-        except Exception as e:
-            logger.error(
-                f"Error fetching subscriptions for user_id {user_id}: {e}")
-            raise e
+    # async def get_user_subscriptions(self, user_id: int) -> list:
+    #
+    #     try:
+    #         query = """
+    #             SELECT
+    #                 us.id as sub_id,
+    #                 us.config_name, -- این خط اضافه شد
+    #                 p.title,
+    #                 p.volume_mb,
+    #                 p.volume_gb,
+    #                 p.is_test_package,
+    #                 si.subscription_link,
+    #                 us.assigned_at
+    #             FROM user_subscriptions us
+    #             JOIN subscription_inventory si ON us.inventory_id = si.id
+    #             JOIN packages p ON si.package_id = p.id
+    #             WHERE us.user_id = ?
+    #             ORDER BY us.assigned_at DESC
+    #         """
+    #         return await db.execute_query_all(query, (user_id,))
+    #     except Exception as e:
+    #         logger.error(
+    #             f"Error fetching subscriptions for user_id {user_id}: {e}")
+    #         raise e
 
     async def get_user_referral_token(self, user_id: int) -> str:
 
@@ -122,3 +125,69 @@ class UserService:
     async def get_admin_info(self, user_id: int) -> dict | None:
         query = "SELECT brand_name FROM admins WHERE user_id = ?"
         return await db.execute_query_single(query, (user_id,))
+
+    async def get_user_subscriptions_paginated(self, user_id: int,
+                                               limit: int = 5,
+                                               offset: int = 0) -> list:
+        """واکشی اشتراک‌ها با صفحه‌بندی مستقیم از دیتابیس"""
+        try:
+            query = """
+                SELECT 
+                    us.id as sub_id,
+                    us.config_name, 
+                    p.title,
+                    p.volume_mb,
+                    p.volume_gb,
+                    p.is_test_package,
+                    p.is_gift_package, 
+                    si.subscription_link,
+                    us.assigned_at
+                FROM user_subscriptions us
+                JOIN subscription_inventory si ON us.inventory_id = si.id
+                JOIN packages p ON si.package_id = p.id
+                WHERE us.user_id = ?
+                ORDER BY us.assigned_at DESC
+                OFFSET ? ROWS FETCH NEXT ? ROWS ONLY
+            """
+            return await db.execute_query_all(query, (user_id, offset, limit))
+        except Exception as e:
+            logger.error(
+                f"Error fetching paginated subscriptions for user_id {user_id}: {e}")
+            raise e
+    async def get_user_subscriptions_count(self, user_id: int) -> int:
+        """دریافت تعداد کل سرویس‌های کاربر برای محاسبه صفحات"""
+        try:
+            query = "SELECT COUNT(id) as total FROM user_subscriptions WHERE user_id = ?"
+            result = await db.execute_query_single(query, (user_id,))
+            return result['total'] if result else 0
+        except Exception as e:
+            logger.error(
+                f"Error fetching subscription count for user_id {user_id}: {e}")
+            raise e
+
+    async def get_user_subscription_detail(self, user_id: int,
+                                           sub_id: int) -> dict:
+        """واکشی اطلاعات یک سرویس خاص برای نمایش در پیام ادیت شده"""
+        try:
+            query = """
+                SELECT 
+                    us.id as sub_id,
+                    us.config_name,
+                    p.title,
+                    COALESCE(i.package_volume_snapshot_mb, p.volume_mb) as volume_mb,
+                    p.volume_gb,
+                    p.is_test_package,
+                    p.is_gift_package, 
+                    si.subscription_link,
+                    us.assigned_at
+                FROM user_subscriptions us
+                JOIN subscription_inventory si ON us.inventory_id = si.id
+                JOIN packages p ON si.package_id = p.id
+                LEFT JOIN invoices i ON us.invoice_id = i.id
+                WHERE us.user_id = ? AND us.id = ?
+            """
+            return await db.execute_query_single(query, (user_id, sub_id))
+        except Exception as e:
+            logger.error(
+                f"Error fetching sub detail for user_id {user_id}, sub_id {sub_id}: {e}")
+            raise e

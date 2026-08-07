@@ -82,7 +82,7 @@ CREATE TABLE invoices
     expires_at DATETIME2 NOT NULL,
     created_at DATETIME2 NOT NULL 
         CONSTRAINT DF_Invoices_CreatedAt DEFAULT (GETDATE()),
-
+    custom_config_name NVARCHAR(100) NULL;
     CONSTRAINT FK_Invoices_Users
         FOREIGN KEY (user_id) REFERENCES users(id),
     CONSTRAINT FK_Invoices_Packages
@@ -100,7 +100,7 @@ CREATE TABLE user_subscriptions
     invoice_id INT NULL,
     assigned_at DATETIME2 NOT NULL 
         CONSTRAINT DF_UserSubscriptions_AssignedAt DEFAULT (GETDATE()),
-
+    config_name NVARCHAR(100) NULL;
     CONSTRAINT FK_UserSubscriptions_Users
         FOREIGN KEY (user_id) REFERENCES users(id),
     CONSTRAINT FK_UserSubscriptions_Inventory

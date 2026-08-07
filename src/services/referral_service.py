@@ -162,8 +162,8 @@ class ReferralService:
                                     VALUES (?, ?, 1, GETDATE());
                                     DECLARE @InventoryId INT = SCOPE_IDENTITY();
 
-                                    INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
-                                    VALUES (?, @InventoryId, NULL, GETDATE());
+                                    INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
+                                    VALUES (?, @InventoryId, NULL, GETDATE(), N'کانفیگ هدیه رفرال');
 
                                     COMMIT TRANSACTION;
                                     SELECT current_points FROM user_referral_stats WHERE user_id = ?;
@@ -203,8 +203,8 @@ class ReferralService:
                                 BEGIN
                                     DECLARE @InventoryId INT;
                                     SELECT @InventoryId = id, @SubLink = subscription_link FROM @UpdatedInventory;
-                                    INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at) 
-                                    VALUES (?, @InventoryId, NULL, GETDATE());
+                                    INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name) 
+                                    VALUES (?, @InventoryId, NULL, GETDATE(), N'کانفیگ هدیه رفرال');
                                     COMMIT TRANSACTION;
                                     SELECT 1 AS reward_granted, @SubLink AS link;
                                 END
@@ -306,8 +306,8 @@ class ReferralService:
                 DECLARE @InventoryId INT = SCOPE_IDENTITY();
 
                 -- تخصیص هدیه به کاربر در لیست سرویس‌های من
-                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
-                VALUES (?, @InventoryId, NULL, GETDATE());
+                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
+                VALUES (?, @InventoryId, NULL, GETDATE(), N'کانفیگ هدیه رفرال');
 
                 COMMIT TRANSACTION;
                 SELECT 1 AS success;

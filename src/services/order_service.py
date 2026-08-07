@@ -49,7 +49,8 @@ class OrderService:
         random_num = secrets.randbelow(900000) + 100000
         return f"NR-{random_num}"
 
-    async def create_invoice(self, user_internal_id: int, package_id: int) -> \
+    async def create_invoice(self, user_internal_id: int,
+                             package_id: int, custom_name: str = None) -> \
     Optional[Dict[str, Any]]:
 
         try:
@@ -72,13 +73,13 @@ class OrderService:
                 minutes=INVOICE_EXPIRY_MINUTES)
 
             query = """
-                INSERT INTO invoices (
-                    user_id, package_id, memo, status_id, 
-                    package_title_snapshot, package_price_snapshot_rial, package_volume_snapshot_mb, 
-                    payment_currency_code, expected_payment_amount, amount_received, expires_at
-                ) 
-                VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, 0.0, ?)
-            """
+                    INSERT INTO invoices (
+                        user_id, package_id, memo, status_id, 
+                        package_title_snapshot, package_price_snapshot_rial, package_volume_snapshot_mb, 
+                        payment_currency_code, expected_payment_amount, amount_received, expires_at, custom_config_name
+                    ) 
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, 0.0, ?, ?)
+                """
             params = (
                 user_internal_id,
                 package['id'],
@@ -88,7 +89,7 @@ class OrderService:
                 package['volume_mb'],
                 "TON",
                 expected_amount,
-                expires_at
+                expires_at, custom_name
             )
 
             invoice_id = await db.execute_non_query(query, params)
@@ -139,22 +140,23 @@ class OrderService:
                                                                     limit_gb=vol_gb)
                 # ثبت اتمیک ساختار دیتابیس شما
                 auto_transaction = """
-                            BEGIN TRY
+                        BEGIN TRY
                                 BEGIN TRANSACTION;
-
-                                -- ثبت کانفیگ جدید در انبار و مارک کردن آن به عنوان تخصیص یافته
+                                
+                                -- واکشی نام انتخابی کاربر از فاکتور مستقیماً درون تراکنش
+                                DECLARE @ConfName NVARCHAR(100);
+                                SELECT @ConfName = custom_config_name FROM invoices WHERE id = ?;
+                        
                                 INSERT INTO subscription_inventory (package_id, subscription_link, is_assigned, created_at)
                                 VALUES (?, ?, 1, GETDATE());
-
+                        
                                 DECLARE @NewInventoryId INT = SCOPE_IDENTITY();
-
-                                -- ثبت در جدول اشتراک‌های کاربر
-                                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
-                                VALUES (?, @NewInventoryId, ?, GETDATE());
-
-                                -- تکمیل نهایی فاکتور به وضعیت COMPLETED
+                        
+                                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
+                                VALUES (?, @NewInventoryId, ?, GETDATE(), ISNULL(@ConfName, N'اشتراک تجاری'));
+                        
                                 UPDATE invoices SET status_id = 3 WHERE id = ?;
-
+                        
                                 COMMIT TRANSACTION;
                                 SELECT 1 AS success;
                             END TRY
@@ -163,8 +165,12 @@ class OrderService:
                                 THROW;
                             END CATCH
                             """
-                await db.execute_query_single(auto_transaction, (
-                package_id, generated_link, user_id, invoice_id, invoice_id))
+                await db.execute_query_single(auto_transaction, (invoice_id,
+                                                                 package_id,
+                                                                 generated_link,
+                                                                 user_id,
+                                                                 invoice_id,
+                                                                 invoice_id))
                 return {"status": "SUCCESS", "link": generated_link}
 
             except Exception as ex:
@@ -177,37 +183,34 @@ class OrderService:
             transaction_query = """
                     BEGIN TRY
                         BEGIN TRANSACTION;
-
-                        -- تعریف یک جدول متغیر موقت برای صید آنی رکورد انبار
+                        
+                        DECLARE @ConfName NVARCHAR(100);
+                        SELECT @ConfName = custom_config_name FROM invoices WHERE id = ?;
+                
                         DECLARE @UpdatedInventory TABLE (id INT, subscription_link NVARCHAR(MAX));
-
-                        -- آپدیت اتمیک: انتخاب، قفل و خروج داده در یک دستور واحد
+                
                         UPDATE TOP (1) subscription_inventory
                         SET is_assigned = 1
                         OUTPUT INSERTED.id, INSERTED.subscription_link INTO @UpdatedInventory
                         WHERE package_id = ? AND is_assigned = 0;
-
-                        -- بررسی اینکه آیا کانفیگی صید شد یا خیر
+                
                         IF EXISTS (SELECT 1 FROM @UpdatedInventory)
                         BEGIN
                             DECLARE @SelectedInventoryId INT;
                             DECLARE @SubLink NVARCHAR(MAX);
-
+                
                             SELECT @SelectedInventoryId = id, @SubLink = subscription_link FROM @UpdatedInventory;
-
-                            -- ثبت در جدول اشتراک‌های کاربر
-                            INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
-                            VALUES (?, @SelectedInventoryId, ?, GETDATE());
-
-                            -- تکمیل نهایی فاکتور به وضعیت COMPLETED (آیدی 3)
+                
+                            INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
+                            VALUES (?, @SelectedInventoryId, ?, GETDATE(), ISNULL(@ConfName, N'اشتراک تجاری'));
+                
                             UPDATE invoices SET status_id = 3 WHERE id = ?;
-
+                
                             COMMIT TRANSACTION;
                             SELECT 1 AS success, @SubLink AS link;
                         END
                         ELSE
                         BEGIN
-                            -- انبار خالی است؛ رول‌بک ملایم برای حفظ وضعیت فاکتور در حالت PAID جهت بررسی ادمین
                             ROLLBACK TRANSACTION;
                             SELECT 0 AS success, NULL AS link;
                         END
@@ -219,10 +222,8 @@ class OrderService:
                     END CATCH
                     """
 
-
         result = await db.execute_query_single(transaction_query, (
-        package_id, user_id, invoice_id, invoice_id))
-
+        invoice_id, package_id, user_id, invoice_id, invoice_id))
         if result and result['success'] == 1:
             return {"status": "SUCCESS", "link": result['link']}
         else:
@@ -253,7 +254,8 @@ class OrderService:
                 try:
                     # تلاش برای ساخت کانفیگ در پنل
                     generated_link = await panel_api.create_user_config(
-                        limit_gb=vol_gb, sub_type="Test", telegram_id=telegram_id)
+                        limit_gb=vol_gb, sub_type="Test",
+                        telegram_id=telegram_id)
                 except Exception as api_ex:
                     # مکانیزم دفاعی هوشمند: نجات کانفیگ در صورت بازگرداندن استاتوس موفقیت‌آمیز 201
                     import re
@@ -284,8 +286,8 @@ class OrderService:
                                         DECLARE @InventoryId INT = SCOPE_IDENTITY();
 
                                         -- ۲. تخصیص کانفیگ به کاربر
-                                        INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
-                                        VALUES (?, @InventoryId, NULL, GETDATE());
+                                        INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
+                                        VALUES (?, @InventoryId, NULL, GETDATE(), N'تست رایگان');
 
                                         -- ۳. علامت‌گذاری استفاده کاربر
                                         UPDATE users SET has_used_test_package = 1 WHERE id = ?;
@@ -329,8 +331,8 @@ class OrderService:
                                SELECT @InventoryId = id, @Link = subscription_link FROM @UpdatedInventory;
 
                                -- ثبت اشتراک تست
-                               INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
-                               VALUES (?, @InventoryId, NULL, GETDATE());
+                               INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
+                               VALUES (?, @InventoryId, NULL, GETDATE(), N'تست رایگان');
 
                                -- مسدودسازی درخواست‌های تست بعدی این کاربر
                                UPDATE users SET has_used_test_package = 1 WHERE id = ?;
@@ -352,7 +354,7 @@ class OrderService:
                        """
 
             res = await db.execute_query_single(test_transaction, (
-            test_pkg['id'], user_internal_id, user_internal_id))
+                test_pkg['id'], user_internal_id, user_internal_id))
 
             if res and res['success'] == 1:
                 return {"status": "SUCCESS", "link": res['link']}
@@ -363,7 +365,6 @@ class OrderService:
             logger.error(
                 f"Error claiming free test package for user {user_internal_id}: {e}")
             return {"status": "ERROR", "link": None}
-
     async def handle_expired_invoices(self) -> int:
         query = "UPDATE invoices SET status_id = 4 WHERE status_id = 1 AND expires_at < GETDATE()"
         await db.execute_non_query(query)
@@ -417,8 +418,8 @@ class OrderService:
                 VALUES (@PkgId, ?, 1, GETDATE());
                 DECLARE @InventoryId INT = SCOPE_IDENTITY();
 
-                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at)
-                VALUES (?, @InventoryId, @InvoiceId, GETDATE());
+                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
+                VALUES (?, @InventoryId, @InvoiceId, GETDATE(), ?);
 
                 COMMIT TRANSACTION;
                 SELECT 1 AS success;
@@ -432,7 +433,7 @@ class OrderService:
             await db.execute_query_single(
                 transaction_query,
                 (admin_internal_id, memo, pkg_snapshot_title, volume_mb,
-                 None, generated_link, admin_internal_id)
+                 None, generated_link, admin_internal_id, custom_name)
             )
 
             return {"status": "SUCCESS", "link": generated_link, "memo": memo}
