@@ -21,12 +21,12 @@ def get_packages_keyboard(
     return InlineKeyboardMarkup(keyboard)
 
 
-def get_payment_keyboard(pay_url: str) -> InlineKeyboardMarkup:
+def get_payment_keyboard(pay_url: str, amount: float, wallet: str) -> InlineKeyboardMarkup:
     """
-      create payment key for payment bt ton
+      کیبورد شیشه‌ای با ۳ دکمه درخواستی
     """
     keyboard = [
-        [InlineKeyboardButton("💎 پرداخت مستقیم از ولت (TON)", url=pay_url)]
+        [InlineKeyboardButton("💎 پرداخت مستقیم ولت (Direct Pay)", url=pay_url)],
     ]
     return InlineKeyboardMarkup(keyboard)
 

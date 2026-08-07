@@ -162,11 +162,10 @@ async def menu_handler(update: Update,
             return
 
         # ب) پردازش نام برای صدور فاکتور خرید کاربر
-            # ب) پردازش نام برای صدور فاکتور خرید کاربر
         elif action_type == 'user_buy':
             package_id = pending_data['package_id']
             loading_msg = await update.message.reply_text(
-                "⏳ در حال صدور فاکتور...")
+                "⏳ در حال صدور فاکتور اختصاصی...")
 
             try:
                 invoice_data = await order_service.create_invoice(internal_id,
@@ -179,25 +178,41 @@ async def menu_handler(update: Update,
                                                     reply_markup=get_main_menu_keyboard())
                     return
 
+                from config import MY_TON_WALLET
+
+                # طراحی پیام ضد تقلب و هشدار عدم رند کردن
                 invoice_text = (
                     f"🧾 **فاکتور پرداخت آنلاین صادر شد**\n\n"
                     f"🏷 **نام سرویس:** `{custom_name}`\n"
                     f"📦 **سرویس انتخابی:** {invoice_data['package_title']}\n"
-                    f"💎 **مبلغ نهایی:** `{invoice_data['expected_amount']:.6f}` TON\n"
-                    f"🔑 **تگ ممو (Memo / Comment):** `{invoice_data['memo']}`\n"
-                    f"⏳ **مهلت پرداخت:** {INVOICE_EXPIRY_MINUTES} دقیقه\n\n"
-                    f"⚠️ **⚠️ هشدار امنیتی بسیار مهم:** سیستم پرداخت ربات کاملاً خودکار است. حتماً در ولت خود (مانند Tonkeeper)، در بخش **Comment** یا **Description**، عبارت مموی بالا یعنی `{invoice_data['memo']}` را دقیقاً کپی و وارد کنید. در صورت وارد نکردن ممو، واریزی شما شناسایی نخواهد شد!"
+                    f"💎 **مبلغ نهایی پرداخت:** `{invoice_data['expected_amount']:.6f}`\n\n"
+                    f"⚠️ **هشدار بسیار مهم (بدون ممو):**\n"
+                    f"سیستم ما مبالغ را به صورت رندوم یکتا تولید می‌کند. لطفاً **به هیچ عنوان مبلغ را رند نکنید!** دقیقاً همین مبلغ بالا را پرداخت کنید، در غیر این صورت ربات تراکنش شما را شناسایی نمی‌کند و کانفیگ تحویل داده نمی‌شود.\n\n"
+                    f"💼 **آدرس کیف پول ما (جهت کپی کلیک کنید):**\n"
+                    f"`{MY_TON_WALLET}`\n\n"
+                    f"⏳ **مهلت پرداخت:** {INVOICE_EXPIRY_MINUTES} دقیقه (پس از این زمان، این پیام حذف و فاکتور باطل می‌شود)."
                 )
-                pay_kb = get_payment_keyboard(invoice_data['payment_link'])
-                await loading_msg.delete()
 
-                # --- ارسال پیام کوتاه به منظور حذف کیبورد نام و بازگرداندن منوی اصلی ---
+                pay_kb = get_payment_keyboard(invoice_data['payment_link'],
+                                              invoice_data['expected_amount'],
+                                              MY_TON_WALLET)
+
+                await loading_msg.delete()
                 await update.message.reply_text(
-                    "✅ فاکتور شما آماده است. لطفا پرداخت را انجام دهید:",
+                    "✅ فاکتور شما آماده است. منوی اصلی فعال شد:",
                     reply_markup=get_main_menu_keyboard())
-                await update.message.reply_text(invoice_text,
-                                                reply_markup=pay_kb,
-                                                parse_mode="Markdown")
+
+                # ارسال فاکتور اصلی و گرفتن message_id
+                sent_msg = await update.message.reply_text(invoice_text,
+                                                           reply_markup=pay_kb,
+                                                           parse_mode="Markdown")
+
+                # ذخیره chat_id و message_id در دیتابیس برای Worker
+                await order_service.update_invoice_message_data(
+                    invoice_id=invoice_data['invoice_id'],
+                    chat_id=sent_msg.chat_id,
+                    message_id=sent_msg.message_id
+                )
 
             except Exception as e:
                 logger.error(f"Error processing invoice generation call: {e}")

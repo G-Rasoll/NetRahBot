@@ -9,7 +9,7 @@ from src.services.user_service import UserService
 from config import MY_TON_WALLET, INVOICE_EXPIRY_MINUTES,PANEL_ALLOCATION_MODE
 from typing import Optional, Dict, Any
 import aiohttp
-
+import random
 logger = logging.getLogger(__name__)
 
 
@@ -19,90 +19,76 @@ class OrderService:
         self.ton_gateway = TonPayment(wallet_address=MY_TON_WALLET)
         self.User_service = UserService()
 
-
-
     async def _get_current_ton_rate(self) -> float:
-
         async with aiohttp.ClientSession() as session:
-            # قیمت تتر به تومان
             async with session.get(
-                    "https://api.tetherland.com/currencies"
-            ) as response:
+                    "https://api.tetherland.com/currencies") as response:
                 usdt_data = await response.json()
-
-            usdt_price = float(
-                usdt_data["data"]["currencies"]["USDT"]["price"]
-            )
+            usdt_price = float(usdt_data["data"]["currencies"]["USDT"]["price"])
 
             async with session.get(
-                    "https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT"
-            ) as response:
+                    "https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT") as response:
                 ton_data = await response.json()
-
             ton_price_usdt = float(ton_data["lastPrice"])
-            ton_price_toman = ton_price_usdt * usdt_price
 
-            return ton_price_toman
+            return ton_price_usdt * usdt_price
 
-    def _generate_unique_memo(self) -> str:
+    async def _generate_unique_amount(self, base_amount: float) -> float:
+        """تولید یک مبلغ رندوم یکتا برای جلوگیری از تداخل فاکتورها"""
+        while True:
+            # ایجاد یک عدد اعشاری تصادفی بین 0.001 تا 0.099
+            random_fraction = random.uniform(0.001000, 0.099000)
+            new_amount = round(base_amount + random_fraction, 6)
 
-        random_num = secrets.randbelow(900000) + 100000
-        return f"NR-{random_num}"
+            # بررسی دیتابیس برای اطمینان از یکتا بودن این مبلغ در بین فاکتورهای باز
+            query = "SELECT id FROM invoices WHERE expected_payment_amount = ? AND status_id = 1"
+            exists = await db.execute_query_single(query, (new_amount,))
+            if not exists:
+                return new_amount
 
-    async def create_invoice(self, user_internal_id: int,
-                             package_id: int, custom_name: str = None) -> \
-    Optional[Dict[str, Any]]:
-
+    async def create_invoice(self, user_internal_id: int, package_id: int,
+                             custom_name: str = None) -> Optional[
+        Dict[str, Any]]:
         try:
             package = await self.package_service.get_package_by_id(package_id)
             if not package or not package['is_active']:
-                logger.warning(
-                    f"Package ID {package_id} is not available for purchase.")
                 return None
-
-            memo = self._generate_unique_memo()
 
             ton_rate = await self._get_current_ton_rate()
             if ton_rate <= 0:
                 raise ValueError(
                     "Calculated TON exchange rate must be greater than zero.")
 
-            expected_amount = float(package['price_rial']) / ton_rate
+            base_expected_amount = float(package['price_rial']) / ton_rate
+
+            # تولید مبلغ یونیک
+            expected_amount = await self._generate_unique_amount(
+                base_expected_amount)
 
             expires_at = datetime.now() + timedelta(
                 minutes=INVOICE_EXPIRY_MINUTES)
 
             query = """
                     INSERT INTO invoices (
-                        user_id, package_id, memo, status_id, 
+                        user_id, package_id, status_id, 
                         package_title_snapshot, package_price_snapshot_rial, package_volume_snapshot_mb, 
                         payment_currency_code, expected_payment_amount, amount_received, expires_at, custom_config_name
                     ) 
-                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, 0.0, ?, ?)
+                    VALUES (?, ?, 1, ?, ?, ?, ?, ?, 0.0, ?, ?)
                 """
             params = (
-                user_internal_id,
-                package['id'],
-                memo,
-                package['title'],
+                user_internal_id, package['id'], package['title'],
                 package['price_rial'],
-                package['volume_mb'],
-                "TON",
-                expected_amount,
-                expires_at, custom_name
+                package['volume_mb'], "TON", expected_amount, expires_at,
+                custom_name
             )
 
             invoice_id = await db.execute_non_query(query, params)
-
             payment_url = self.ton_gateway.create_invoice_link(
-                amount=expected_amount,
-                memo=memo,
-                expires_in_minutes=INVOICE_EXPIRY_MINUTES
-            )
+                amount=expected_amount)
 
             return {
                 "invoice_id": invoice_id,
-                "memo": memo,
                 "expected_amount": expected_amount,
                 "payment_link": payment_url,
                 "expires_at": expires_at,
@@ -114,11 +100,32 @@ class OrderService:
                 f"Error in creating invoice for user {user_internal_id}: {e}")
             raise e
 
+    async def update_invoice_message_data(self, invoice_id: int, chat_id: int,
+                                          message_id: int):
+        """ثبت آیدی پیام تلگرام در دیتابیس برای حذف در صورت انقضا"""
+        query = "UPDATE invoices SET chat_id = ?, message_id = ? WHERE id = ?"
+        await db.execute_non_query(query, (chat_id, message_id, invoice_id))
+
     async def process_successful_payment(self, invoice_id: int, package_id: int,
                                          user_id: int, tx_hash: str,
-                                         amount_received: float) -> Dict[
-        str, Any]:
+                                         amount_received: float,
+                                         tx_time: int) -> Dict[str, Any]:
 
+        # بررسی تقلب زمانی (پرداخت دیرهنگام)
+        invoice = await db.execute_query_single(
+            "SELECT expires_at FROM invoices WHERE id = ?", (invoice_id,))
+        if invoice:
+            tx_datetime = datetime.fromtimestamp(tx_time)
+            # اگر زمان تراکنش روی بلاکچین از زمان انقضای ما بیشتر باشد
+            if tx_datetime > invoice['expires_at']:
+                logger.warning(
+                    f"Late payment detected for invoice {invoice_id}. Updating status to 6 (LATE_PAYMENT).")
+                query_late = "UPDATE invoices SET status_id = 6, tx_hash = ?, amount_received = ? WHERE id = ?"
+                await db.execute_non_query(query_late, (
+                tx_hash, amount_received, invoice_id))
+                return {"status": "LATE_PAYMENT", "link": None}
+
+        # آپدیت فاکتور به PAID
         query_update_invoice = """
                     UPDATE invoices 
                     SET status_id = 2, tx_hash = ?, amount_received = ? 
@@ -130,33 +137,28 @@ class OrderService:
         if PANEL_ALLOCATION_MODE == "AUTO":
             try:
                 user_info = await self.User_service.get_user_by_id(user_id)
-                # گرفتن حجم بسته به گیگابایت
                 pkg = await self.package_service.get_package_by_id(package_id)
                 vol_gb = float(pkg['volume_gb'])
 
-                # ساخت کانفیگ در پنل
-                generated_link = await panel_api.create_user_config(sub_type="buyed",
-                                                                    telegram_id=user_info["telegram_id"],
-                                                                    limit_gb=vol_gb)
-                # ثبت اتمیک ساختار دیتابیس شما
+                generated_link = await panel_api.create_user_config(
+                    sub_type="buyed",
+                    telegram_id=user_info["telegram_id"],
+                    limit_gb=vol_gb)
                 auto_transaction = """
                         BEGIN TRY
                                 BEGIN TRANSACTION;
-                                
-                                -- واکشی نام انتخابی کاربر از فاکتور مستقیماً درون تراکنش
                                 DECLARE @ConfName NVARCHAR(100);
                                 SELECT @ConfName = custom_config_name FROM invoices WHERE id = ?;
-                        
+
                                 INSERT INTO subscription_inventory (package_id, subscription_link, is_assigned, created_at)
                                 VALUES (?, ?, 1, GETDATE());
-                        
+
                                 DECLARE @NewInventoryId INT = SCOPE_IDENTITY();
-                        
+
                                 INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
                                 VALUES (?, @NewInventoryId, ?, GETDATE(), ISNULL(@ConfName, N'اشتراک تجاری'));
-                        
+
                                 UPDATE invoices SET status_id = 3 WHERE id = ?;
-                        
                                 COMMIT TRANSACTION;
                                 SELECT 1 AS success;
                             END TRY
@@ -165,47 +167,39 @@ class OrderService:
                                 THROW;
                             END CATCH
                             """
-                await db.execute_query_single(auto_transaction, (invoice_id,
-                                                                 package_id,
-                                                                 generated_link,
-                                                                 user_id,
-                                                                 invoice_id,
-                                                                 invoice_id))
+                await db.execute_query_single(auto_transaction, (
+                invoice_id, package_id, generated_link, user_id, invoice_id,
+                invoice_id))
                 return {"status": "SUCCESS", "link": generated_link}
 
             except Exception as ex:
                 logger.error(
                     f"Error in AUTO allocation for invoice {invoice_id}: {ex}")
-                # اگر پنل دان بود، فاکتور در حالت PAID می‌ماند تا دستی چک شود
                 return {"status": "OUT_OF_STOCK", "link": None}
         else:
-            # حالت مخزن
             transaction_query = """
                     BEGIN TRY
                         BEGIN TRANSACTION;
-                        
                         DECLARE @ConfName NVARCHAR(100);
                         SELECT @ConfName = custom_config_name FROM invoices WHERE id = ?;
-                
+
                         DECLARE @UpdatedInventory TABLE (id INT, subscription_link NVARCHAR(MAX));
-                
+
                         UPDATE TOP (1) subscription_inventory
                         SET is_assigned = 1
                         OUTPUT INSERTED.id, INSERTED.subscription_link INTO @UpdatedInventory
                         WHERE package_id = ? AND is_assigned = 0;
-                
+
                         IF EXISTS (SELECT 1 FROM @UpdatedInventory)
                         BEGIN
                             DECLARE @SelectedInventoryId INT;
                             DECLARE @SubLink NVARCHAR(MAX);
-                
                             SELECT @SelectedInventoryId = id, @SubLink = subscription_link FROM @UpdatedInventory;
-                
+
                             INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
                             VALUES (?, @SelectedInventoryId, ?, GETDATE(), ISNULL(@ConfName, N'اشتراک تجاری'));
-                
+
                             UPDATE invoices SET status_id = 3 WHERE id = ?;
-                
                             COMMIT TRANSACTION;
                             SELECT 1 AS success, @SubLink AS link;
                         END
@@ -216,21 +210,16 @@ class OrderService:
                         END
                     END TRY
                     BEGIN CATCH
-                        IF @@TRANCOUNT > 0
-                            ROLLBACK TRANSACTION;
-                        THROW; -- پرتاب خطا به سمت پایتون جهت آگاهی لاگر
+                        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                        THROW;
                     END CATCH
                     """
-
-        result = await db.execute_query_single(transaction_query, (
-        invoice_id, package_id, user_id, invoice_id, invoice_id))
-        if result and result['success'] == 1:
-            return {"status": "SUCCESS", "link": result['link']}
-        else:
-            logger.critical(
-                f"⚠️ OUT OF STOCK ALERT: Invoice {invoice_id} is paid but subscription inventory is empty!")
-            return {"status": "OUT_OF_STOCK", "link": None}
-
+            result = await db.execute_query_single(transaction_query, (
+            invoice_id, package_id, user_id, invoice_id, invoice_id))
+            if result and result['success'] == 1:
+                return {"status": "SUCCESS", "link": result['link']}
+            else:
+                return {"status": "OUT_OF_STOCK", "link": None}
     async def claim_free_test_package(self, user_internal_id: int,
                                       telegram_id: int) -> Dict[str, Any]:
 
