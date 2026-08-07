@@ -1,0 +1,34 @@
+name: Deploy NetRah
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to VPS
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          key: ${{ secrets.SSH_KEY }}
+
+          script: |
+            cd /opt/apps/netrah-bot
+
+            git pull origin main
+
+            if git diff HEAD@{1} HEAD --name-only | grep -q "requirements.txt"; then
+              source /opt/venvs/netrah-bot/bin/activate
+              pip install -r requirements.txt
+            fi
+
+            systemctl restart netrah-bot
+            systemctl restart netrah-worker
+
+            systemctl is-active --quiet netrah-bot
+            systemctl is-active --quiet netrah-worker
