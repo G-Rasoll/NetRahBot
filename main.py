@@ -45,7 +45,7 @@ def main() -> None:
         logger.info("NetRah Bot is listening for commerce requests...")
         application.run_polling()
     except Exception as e:
-        logger.critical(f"Critical      error during bot execution: {e}")
+        logger.critical(f"Criticalerror during bot execution: {e}")
 
 
 if __name__ == "__main__":
