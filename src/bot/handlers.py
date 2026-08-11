@@ -7,15 +7,15 @@ from telegram.ext import ContextTypes
 from src.services.user_service import UserService
 from src.services.package_service import PackageService
 from src.services.order_service import OrderService
-from config import INVOICE_EXPIRY_MINUTES, ADMIN_IDS
-from config import INVOICE_EXPIRY_MINUTES, REQUIRED_CHANNEL, CHANNEL_LINK
-
+from config import INVOICE_EXPIRY_MINUTES, ADMIN_IDS, MY_TON_WALLET,\
+    INVOICE_EXPIRY_MINUTES, REQUIRED_CHANNEL, CHANNEL_LINK
 from src.bot.keyboards import get_packages_keyboard, get_payment_keyboard, \
     get_join_keyboard, get_main_menu_keyboard, get_referral_keyboard, \
     get_admin_config_name_keyboard, get_my_services_keyboard, \
     get_service_detail_keyboard
 
 from src.services.referral_service import ReferralService
+
 
 logger = logging.getLogger(__name__)
 user_service = UserService()
@@ -178,14 +178,12 @@ async def menu_handler(update: Update,
                                                     reply_markup=get_main_menu_keyboard())
                     return
 
-                from config import MY_TON_WALLET
-
                 # طراحی پیام ضد تقلب و هشدار عدم رند کردن
                 invoice_text = (
                     f"🧾 **فاکتور پرداخت آنلاین صادر شد**\n\n"
                     f"🏷 **نام سرویس:** `{custom_name}`\n"
                     f"📦 **سرویس انتخابی:** {invoice_data['package_title']}\n"
-                    f"💎 **مبلغ نهایی پرداخت:** `{invoice_data['expected_amount']:.6f}`\n\n"
+                    f"💎 **مبلغ نهایی پرداخت:** `{invoice_data['expected_amount']:.9f}`\n\n"
                     f"⚠️ **هشدار بسیار مهم (بدون ممو):**\n"
                     f"سیستم ما مبالغ را به صورت رندوم یکتا تولید می‌کند. لطفاً **به هیچ عنوان مبلغ را رند نکنید!** دقیقاً همین مبلغ بالا را پرداخت کنید، در غیر این صورت ربات تراکنش شما را شناسایی نمی‌کند و کانفیگ تحویل داده نمی‌شود.\n\n"
                     f"💼 **آدرس کیف پول ما (جهت کپی کلیک کنید):**\n"

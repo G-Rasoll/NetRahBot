@@ -1,4 +1,5 @@
 import logging
+import math
 import secrets
 from datetime import datetime, timedelta
 from src.infrastructure.database import db
@@ -10,6 +11,10 @@ from config import MY_TON_WALLET, INVOICE_EXPIRY_MINUTES,PANEL_ALLOCATION_MODE
 from typing import Optional, Dict, Any
 import aiohttp
 import random
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+
 logger = logging.getLogger(__name__)
 
 
@@ -19,74 +24,143 @@ class OrderService:
         self.ton_gateway = TonPayment(wallet_address=MY_TON_WALLET)
         self.User_service = UserService()
 
-    async def _get_current_ton_rate(self) -> float:
+    async def _get_current_gram_rate(self) -> float:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                     "https://api.tetherland.com/currencies") as response:
+                response.raise_for_status()
                 usdt_data = await response.json()
-            usdt_price = float(usdt_data["data"]["currencies"]["USDT"]["price"])
-
+            usdt_price = float(
+                usdt_data["data"]["currencies"]["USDT"]["price"]
+            )
             async with session.get(
-                    "https://api.binance.com/api/v3/ticker/24hr?symbol=TONUSDT") as response:
-                ton_data = await response.json()
-            ton_price_usdt = float(ton_data["lastPrice"])
+                    "https://api.binance.com/api/v3/ticker/price",
+                    params={"symbol": "GRAMUSDT"}
+            ) as response:
+                response.raise_for_status()
+                gram_data = await response.json()
+            gram_price_usdt = float(gram_data["price"])
+            return gram_price_usdt * usdt_price
 
-            return ton_price_usdt * usdt_price
+    async def _generate_unique_amount(self, base_amount) -> Decimal:
+        max_retries = 15
+        try:
+            base_amount = Decimal(str(base_amount)).quantize(
+                Decimal("0.000000001"),
+                rounding=ROUND_HALF_UP
+            )
+            if base_amount <= Decimal("0.001"):
+                raise ValueError(
+                    f"Base amount is too small to apply the random deduction safely: {base_amount}"
+                )
 
-    async def _generate_unique_amount(self, base_amount: float) -> float:
-        """تولید یک مبلغ رندوم یکتا برای جلوگیری از تداخل فاکتورها"""
-        while True:
-            # ایجاد یک عدد اعشاری تصادفی بین 0.001 تا 0.099
-            random_fraction = random.uniform(0.001000, 0.099000)
-            new_amount = round(base_amount + random_fraction, 6)
+            for attempt in range(max_retries):
+                random_deduction_int = random.randint(1, 1000000)
+                deduction = Decimal(random_deduction_int) / Decimal(
+                    "1000000000")
+                new_amount = base_amount - deduction
+                if new_amount >= base_amount:
+                    continue
+                new_amount = new_amount.quantize(
+                    Decimal("0.000000001"),
+                    rounding=ROUND_DOWN
+                )
+                query = """
+                    SELECT id
+                    FROM invoices
+                    WHERE expected_payment_amount = ?
+                      AND status_id = 1
+                """
+                exists = await db.execute_query_single(query, (new_amount,))
+                if not exists:
+                    logger.info(
+                        f"Unique payment amount generated: "
+                        f"{new_amount} "
+                        f"(base={base_amount}, attempt={attempt + 1})"
+                    )
+                    return new_amount
+            logger.critical(
+                f"Failed to generate unique amount after "
+                f"{max_retries} attempts for base {base_amount}"
+            )
+            raise RuntimeError(
+                "سیستم در حال حاضر قادر به تولید فاکتور یکتا نیست. "
+                "لطفاً دقایقی دیگر تلاش کنید."
+            )
+        except Exception as e:
+            logger.error(
+                f"Error generating unique amount for base "
+                f"{base_amount}: {e}",
+                exc_info=True
+            )
+            raise
 
-            # بررسی دیتابیس برای اطمینان از یکتا بودن این مبلغ در بین فاکتورهای باز
-            query = "SELECT id FROM invoices WHERE expected_payment_amount = ? AND status_id = 1"
-            exists = await db.execute_query_single(query, (new_amount,))
-            if not exists:
-                return new_amount
+    async def create_invoice(
+            self,
+            user_internal_id: int,
+            package_id: int,
+            custom_name: str = None
+    ) -> Optional[Dict[str, Any]]:
 
-    async def create_invoice(self, user_internal_id: int, package_id: int,
-                             custom_name: str = None) -> Optional[
-        Dict[str, Any]]:
         try:
             package = await self.package_service.get_package_by_id(package_id)
             if not package or not package['is_active']:
                 return None
 
-            ton_rate = await self._get_current_ton_rate()
-            if ton_rate <= 0:
+            gram_rate = await self._get_current_gram_rate()
+            if gram_rate <= 0:
                 raise ValueError(
-                    "Calculated TON exchange rate must be greater than zero.")
-
-            base_expected_amount = float(package['price_rial']) / ton_rate
-
-            # تولید مبلغ یونیک
+                    "Calculated GRAM exchange rate must be greater than zero."
+                )
+            package_price = Decimal(str(package['price_rial']))
+            gram_rate_decimal = Decimal(str(gram_rate))
+            raw_base_amount = package_price / gram_rate_decimal
+            base_expected_amount = raw_base_amount.quantize(
+                Decimal("0.000000001"),
+                rounding=ROUND_HALF_UP
+            )
             expected_amount = await self._generate_unique_amount(
                 base_expected_amount)
-
             expires_at = datetime.now() + timedelta(
                 minutes=INVOICE_EXPIRY_MINUTES)
-
             query = """
-                    INSERT INTO invoices (
-                        user_id, package_id, status_id, 
-                        package_title_snapshot, package_price_snapshot_rial, package_volume_snapshot_mb, 
-                        payment_currency_code, expected_payment_amount, amount_received, expires_at, custom_config_name
-                    ) 
-                    VALUES (?, ?, 1, ?, ?, ?, ?, ?, 0.0, ?, ?)
-                """
+                INSERT INTO invoices (
+                    user_id,
+                    package_id,
+                    status_id,
+                    package_title_snapshot,
+                    package_price_snapshot_rial,
+                    package_volume_snapshot_mb,
+                    payment_currency_code,
+                    expected_payment_amount,
+                    amount_received,
+                    expires_at,
+                    custom_config_name
+                )
+                OUTPUT INSERTED.id
+                VALUES (?, ?, 1, ?, ?, ?, ?, ?, 0.0, ?, ?)
+            """
             params = (
-                user_internal_id, package['id'], package['title'],
+                user_internal_id,
+                package['id'],
+                package['title'],
                 package['price_rial'],
-                package['volume_mb'], "TON", expected_amount, expires_at,
+                package['volume_mb'],
+                "GRAM",
+                expected_amount,
+                expires_at,
                 custom_name
             )
-
-            invoice_id = await db.execute_non_query(query, params)
+            invoice_id = await db.execute_insert_return_id(query, params)
             payment_url = self.ton_gateway.create_invoice_link(
                 amount=expected_amount)
-
+            logger.info(
+                f"Invoice created: "
+                f"id={invoice_id}, "
+                f"base_amount={base_expected_amount}, "
+                f"expected_amount={expected_amount}, "
+                f"currency=GRAM"
+            )
             return {
                 "invoice_id": invoice_id,
                 "expected_amount": expected_amount,
@@ -94,17 +168,26 @@ class OrderService:
                 "expires_at": expires_at,
                 "package_title": package['title']
             }
-
         except Exception as e:
             logger.error(
-                f"Error in creating invoice for user {user_internal_id}: {e}")
-            raise e
+                f"Error in creating invoice for user {user_internal_id}: {e}",
+                exc_info=True
+            )
+            raise
 
     async def update_invoice_message_data(self, invoice_id: int, chat_id: int,
                                           message_id: int):
         """ثبت آیدی پیام تلگرام در دیتابیس برای حذف در صورت انقضا"""
-        query = "UPDATE invoices SET chat_id = ?, message_id = ? WHERE id = ?"
-        await db.execute_non_query(query, (chat_id, message_id, invoice_id))
+        try:
+            query = "UPDATE invoices SET chat_id = ?, message_id = ? WHERE id = ?"
+            await db.execute_non_query(query, (chat_id, message_id, invoice_id))
+            logger.info(
+                f"Successfully updated message data for invoice {invoice_id} | Chat: {chat_id}, Msg: {message_id}")
+        except Exception as e:
+            logger.error(
+                f"Failed to update chat_id/message_id for invoice {invoice_id}. DB Error: {e}",
+                exc_info=True)
+            raise e
 
     async def process_successful_payment(self, invoice_id: int, package_id: int,
                                          user_id: int, tx_hash: str,
