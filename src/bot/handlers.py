@@ -107,45 +107,63 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # ۱. استیت "انتظار برای وارد کردن کد تخفیف"
     # ----------------------------------------------------
     if 'waiting_for_discount_invoice_id' in context.user_data:
-        invoice_id = context.user_data['waiting_for_discount_invoice_id']
-        discount_code = text.strip()
 
-        if text == "❌ لغو عملیات" or text == "🔙 بازگشت به فاکتور":
+        # لیستی از دکمه‌های متنی منو و دستورات اصلی
+        main_menu_commands = [
+            "🛍️ خرید اشتراک جدید", "🎁 دریافت کانفیگ تست (رایگان)",
+            "👤 سرویس‌های من", "📊 پشتیبانی و راهنما",
+            "👥 زیرمجموعه‌گیری و دعوت", "📈 آمار کلی پنل", "/start"
+        ]
+
+        # اگر کاربر دکمه‌های کیبورد اصلی را لمس کرد یا /start فرستاد، استیت را فوراً پاک کن
+        if text in main_menu_commands:
             del context.user_data['waiting_for_discount_invoice_id']
-            await update.message.reply_text("عملیات ورود کد تخفیف لغو شد.", reply_markup=get_main_menu_keyboard(user_tg_id))
-            return
+            # در اینجا return نمی‌کنیم تا پیام به پایین‌تر برود و توسط بلاک‌های اصلی منو پردازش شود.
+        else:
+            invoice_id = context.user_data['waiting_for_discount_invoice_id']
+            discount_code = text.strip()
 
-        loading = await update.message.reply_text("⏳ در حال بررسی و اعمال کد تخفیف...")
+            if text == "❌ لغو عملیات":
+                del context.user_data['waiting_for_discount_invoice_id']
+                await update.message.reply_text("عملیات ورود کد تخفیف لغو شد.",
+                                                reply_markup=get_main_menu_keyboard(
+                                                    user_tg_id))
+                return
 
-        result = await order_service.apply_discount_to_invoice(invoice_id, internal_id, discount_code)
+            loading = await update.message.reply_text(
+                "⏳ در حال بررسی و اعمال کد تخفیف...")
 
-        if not result['success']:
-            await loading.edit_text(
-                f"{result['msg']}\n\nمی‌توانید کد دیگری بفرستید یا بازگردید:",
-                reply_markup=get_cancel_discount_keyboard(invoice_id)
+            result = await order_service.apply_discount_to_invoice(invoice_id,
+                                                                   internal_id,
+                                                                   discount_code)
+
+            if not result['success']:
+                await loading.edit_text(
+                    f"{result['msg']}\n\nمی‌توانید کد دیگری بفرستید یا بازگردید:",
+                    reply_markup=get_cancel_discount_keyboard(invoice_id)
+                )
+                return
+
+            del context.user_data['waiting_for_discount_invoice_id']
+
+            success_msg = (
+                f"✅ **کد تخفیف با موفقیت اعمال شد!**\n\n"
+                f"💰 مبلغ کسر شده: `{result['discount_amount']:,.0f}` \n"
+                f"💳 مبلغ جدید به ریال: `{result['final_price_rial']:,.0f}`\n\n"
+                f"💎 مبلغ جدید پرداختی: `{result['new_expected_amount']}` TON\n\n"
+                 f"⚠️ **هشدار بسیار مهم:**\n"
+                f"سیستم ما مبالغ را به صورت رندوم یکتا تولید می‌کند. لطفاً **به هیچ عنوان مبلغ را رند نکنید!** دقیقاً همین مبلغ بالا را پرداخت کنید، در غیر این صورت ربات تراکنش شما را شناسایی نمی‌کند و کانفیگ تحویل داده نمی‌شود.\n\n"
+                f"💼 **آدرس کیف پول ما (جهت کپی کلیک کنید):**\n"
+                f"`{MY_TON_WALLET}`\n\n"
+                f"جهت پرداخت روی دکمه زیر کلیک کنید:"
             )
+            new_kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 پرداخت با TON", url=result['new_payment_link'])],
+                [InlineKeyboardButton("❌ لغو فاکتور", callback_data=f"cancel_inv:{invoice_id}")]
+            ])
+            await loading.edit_text(success_msg, reply_markup=new_kb, parse_mode="Markdown")
             return
-
-        del context.user_data['waiting_for_discount_invoice_id']
-
-        success_msg = (
-            f"✅ **کد تخفیف با موفقیت اعمال شد!**\n\n"
-            f"💰 مبلغ کسر شده: `{result['discount_amount']:,.0f}` \n"
-            f"💳 مبلغ جدید به ریال: `{result['final_price_rial']:,.0f}`\n\n"
-            f"💎 مبلغ جدید پرداختی: `{result['new_expected_amount']}` TON\n\n"
-             f"⚠️ **هشدار بسیار مهم:**\n"
-            f"سیستم ما مبالغ را به صورت رندوم یکتا تولید می‌کند. لطفاً **به هیچ عنوان مبلغ را رند نکنید!** دقیقاً همین مبلغ بالا را پرداخت کنید، در غیر این صورت ربات تراکنش شما را شناسایی نمی‌کند و کانفیگ تحویل داده نمی‌شود.\n\n"
-            f"💼 **آدرس کیف پول ما (جهت کپی کلیک کنید):**\n"
-            f"`{MY_TON_WALLET}`\n\n"
-            f"جهت پرداخت روی دکمه زیر کلیک کنید:"
-        )
-        new_kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 پرداخت با TON", url=result['new_payment_link'])],
-            [InlineKeyboardButton("❌ لغو فاکتور", callback_data=f"cancel_inv:{invoice_id}")]
-        ])
-        await loading.edit_text(success_msg, reply_markup=new_kb, parse_mode="Markdown")
-        return
-
+        ##
     if 'pending_config_name' in context.user_data:
         pending_data = context.user_data['pending_config_name']
         action_type = pending_data.get('type')
@@ -632,23 +650,33 @@ async def invoice_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_cancel_discount_keyboard(invoice_id)
         )
 
+    # ======== رفع باگ ۱: اضافه شدن هندلر بازگشت به فاکتور ========
+    elif data.startswith("back_to_inv:"):
+        # استیت انتظار برای کد تخفیف را پاک می‌کنیم
+        if 'waiting_for_discount_invoice_id' in context.user_data:
+            del context.user_data['waiting_for_discount_invoice_id']
 
+        await query.answer("عملیات ورود کد تخفیف لغو شد.")
+        # چون پیام درخواست کد تخفیف یک پیام جدید است، آن را حذف می‌کنیم تا صفحه خلوت شود
+        # فاکتور اصلی در پیام بالاتر دست‌نخورده باقی مانده است.
+        await query.message.delete()
+
+    # ======== رفع باگ ۲: ادغام دو بلاک تکراری لغو فاکتور ========
     elif data.startswith("cancel_inv:"):
-
         invoice_id = int(data.split(":")[1])
+        internal_id = context.user_data.get('internal_db_id')
+
+        # لغو فاکتور در دیتابیس (اگر تابع آن وجود دارد)
+        if internal_id:
+            await order_service.cancel_invoice(invoice_id, internal_id)
 
         await query.answer()
+        await query.message.edit_text("❌ فاکتور با موفقیت لغو شد.")
 
-        await query.message.edit_text("❌ فاکتور لغو شد.")
-
-        # ارسال مجدد منوی اصلی به کاربر
-
+        # نمایش مجدد منوی اصلی
         await query.message.reply_text(
-
             "عملیات متوقف شد. برای ادامه از منوی زیر استفاده کنید:",
-
             reply_markup=get_main_menu_keyboard()
-
         )
 
     elif data.startswith("cancel_inv:"):
