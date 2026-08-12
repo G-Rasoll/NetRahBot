@@ -3,6 +3,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup,\
 from typing import List, Dict, Any
 import math
 
+from config import ADMIN_IDS
+
+
 def get_packages_keyboard(
         packages: List[Dict[str, Any]]) -> InlineKeyboardMarkup:
     """
@@ -38,16 +41,20 @@ def get_join_keyboard(channel_url: str) -> InlineKeyboardMarkup:
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
 
+def get_main_menu_keyboard(user_tg_id: int = None) -> ReplyKeyboardMarkup:
     reply_keyboard = [
         ["🛍️ خرید اشتراک جدید"],
         ["🎁 دریافت کانفیگ تست (رایگان)", "👤 سرویس‌های من"],
         ["📊 پشتیبانی و راهنما"],
         ["👥 زیرمجموعه‌گیری و دعوت"]
     ]
-    return ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
 
+    # اضافه شدن دکمه اختصاصی فقط در صورتی که کاربر جزو ادمین‌ها باشد
+    if user_tg_id and user_tg_id in ADMIN_IDS:
+        reply_keyboard.append(["📈 آمار کلی پنل"])
+
+    return ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
 def get_referral_keyboard() -> InlineKeyboardMarkup:
 
     keyboard = [

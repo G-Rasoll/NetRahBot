@@ -4,11 +4,13 @@ import string
 import secrets
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes
+
+from src.infrastructure.panel_api import panel_api
 from src.services.user_service import UserService
 from src.services.package_service import PackageService
 from src.services.order_service import OrderService
 from src.services.referral_service import ReferralService
-from config import REQUIRED_CHANNEL, CHANNEL_LINK, MY_TON_WALLET
+from config import REQUIRED_CHANNEL, CHANNEL_LINK, MY_TON_WALLET, ADMIN_IDS
 from src.bot.keyboards import (
     get_packages_keyboard, get_join_keyboard, get_main_menu_keyboard,
     get_referral_keyboard, get_admin_config_name_keyboard,
@@ -22,6 +24,17 @@ package_service = PackageService()
 order_service = OrderService()
 referral_service = ReferralService()
 
+
+def format_bytes(value):
+    if value is None:
+        return "نامحدود"
+    value = float(value)
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    for unit in units:
+        if value < 1024:
+            return f"{value:.2f} {unit}"
+        value /= 1024
+    return f"{value:.2f} EB"
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tg_user = update.effective_user
@@ -59,7 +72,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         context.user_data['internal_db_id'] = internal_id
 
-        markup = get_main_menu_keyboard()
+        markup = get_main_menu_keyboard(tg_user.id)
         welcome_text = f"سلام {tg_user.first_name} عزیز! 🚀\nبه ربات فروش کانفیگ **نت‌راه** خوش آمدید."
         await update.message.reply_text(welcome_text, reply_markup=markup, parse_mode="Markdown")
     except Exception as e:
@@ -99,7 +112,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         if text == "❌ لغو عملیات" or text == "🔙 بازگشت به فاکتور":
             del context.user_data['waiting_for_discount_invoice_id']
-            await update.message.reply_text("عملیات ورود کد تخفیف لغو شد.", reply_markup=get_main_menu_keyboard())
+            await update.message.reply_text("عملیات ورود کد تخفیف لغو شد.", reply_markup=get_main_menu_keyboard(user_tg_id))
             return
 
         loading = await update.message.reply_text("⏳ در حال بررسی و اعمال کد تخفیف...")
@@ -117,7 +130,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         success_msg = (
             f"✅ **کد تخفیف با موفقیت اعمال شد!**\n\n"
-            f"💰 مبلغ کسر شده: `{result['discount_amount']:,.0f}` ریال\n"
+            f"💰 مبلغ کسر شده: `{result['discount_amount']:,.0f}` \n"
             f"💳 مبلغ جدید به ریال: `{result['final_price_rial']:,.0f}`\n\n"
             f"💎 مبلغ جدید پرداختی: `{result['new_expected_amount']}` TON\n\n"
              f"⚠️ **هشدار بسیار مهم:**\n"
@@ -139,7 +152,7 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         if text == "❌ لغو عملیات":
             del context.user_data['pending_config_name']
-            await update.message.reply_text("عملیات لغو شد.", reply_markup=get_main_menu_keyboard())
+            await update.message.reply_text("عملیات لغو شد.", reply_markup=get_main_menu_keyboard(user_tg_id))
             return
 
         custom_name = None
@@ -181,13 +194,15 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             finally:
                 if 'pending_config_name' in context.user_data:
                     del context.user_data['pending_config_name']
-                await update.message.reply_text("منوی اصلی:", reply_markup=get_main_menu_keyboard())
+                await update.message.reply_text("منوی اصلی:", reply_markup=get_main_menu_keyboard(user_tg_id))
             return
 
         elif action_type == 'user_buy':
             package_id = pending_data['package_id']
 
-            loading_msg = await update.message.reply_text("⏳ در حال صدور فاکتور...")
+            loading_msg = await update.message.reply_text(
+                "⏳ در حال صدور فاکتور..."
+            )
 
             invoice_data = await order_service.create_invoice(internal_id, package_id, custom_name)
 
@@ -337,8 +352,50 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             logger.error(f"Error handling free test package for user {user_tg_id}: {e}")
             await update.message.reply_text("⚠️ خطایی در پردازش درخواست شما رخ داد.")
 
+    elif text == "📈 آمار کلی پنل":
+        # بررسی امنیتی مضاعف: اگر کاربر دستی تایپ کرد ولی ادمین نبود، کاری انجام ندهد
+        if user_tg_id not in ADMIN_IDS:
+            await update.message.reply_text(
+                "⛔️ شما مجوز دسترسی به این بخش را ندارید.")
+            return
+
+        loading_msg = await update.message.reply_text(
+            "⏳ در حال ارتباط با API پنل...")
+
+        try:
+            stats = await panel_api.get_panel_stats()
+
+            percentage_text = f"{stats['assigned_percentage']:.2f}%" if stats[
+                                                                            'assigned_percentage'] is not None else "نامشخص"
+
+            stats_text = (
+                f"📊 **آمار جامع پنل پاسارگاد**\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 **ادمین پنل:** `{stats['admin_username']}`\n"
+                f"👥 **کل کاربران:** `{stats['users_count']}` نفر\n"
+                f"♾ **کاربران نامحدود:** `{stats['unlimited_users_count']}` نفر\n\n"
+                f"🌐 **وضعیت کلی ترافیک سرور:**\n"
+                f"▫️ حجم کل پنل: `{format_bytes(stats['total_panel_traffic'])}`\n"
+                f"▫️ حجم مصرف شده: `{format_bytes(stats['used_panel_traffic'])}`\n"
+                f"▫️ حجم باقیمانده: `{format_bytes(stats['panel_remaining'])}`\n\n"
+                f"📦 **وضعیت تخصیص به کاربران:**\n"
+                f"▫️ مجموع حجم اختصاص‌یافته: `{format_bytes(stats['total_assigned'])}`\n"
+                f"▫️ درصد اختصاص‌یافته از کل: `{percentage_text}`\n"
+                f"━━━━━━━━━━━━━━━━━━━━"
+            )
+            await loading_msg.edit_text(stats_text, parse_mode="Markdown")
+
+        except Exception as e:
+            logger.error(
+                f"Error fetching panel stats for admin {user_tg_id}: {e}")
+            await loading_msg.edit_text(
+                "⚠️ خطا در دریافت اطلاعات از پنل. لطفاً وضعیت سرور را بررسی کنید.")
+
     else:
-        await update.message.reply_text("💡 لطفاً از گزینه‌های منو استفاده کنید.")
+        await update.message.reply_text(
+            "💡 لطفاً از گزینه‌های منو استفاده کنید.",
+            reply_markup=get_main_menu_keyboard()
+        )
 
 
 async def package_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -419,7 +476,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 except Exception as e:
                     logger.error(f"Failed to notify inviter about join: {e}")
 
-            markup = get_main_menu_keyboard()
+            markup = get_main_menu_keyboard(tg_user)
             welcome_text = f"خوش آمدید! 🚀\nمنوی ربات **نت‌راه** برای شما فعال شد."
             await query.message.reply_text(welcome_text, reply_markup=markup, parse_mode="Markdown")
             await query.message.delete()
@@ -575,11 +632,24 @@ async def invoice_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_cancel_discount_keyboard(invoice_id)
         )
 
-    elif data.startswith("back_to_inv:"):
-        if 'waiting_for_discount_invoice_id' in context.user_data:
-            del context.user_data['waiting_for_discount_invoice_id']
+
+    elif data.startswith("cancel_inv:"):
+
+        invoice_id = int(data.split(":")[1])
+
         await query.answer()
-        await query.message.delete()
+
+        await query.message.edit_text("❌ فاکتور لغو شد.")
+
+        # ارسال مجدد منوی اصلی به کاربر
+
+        await query.message.reply_text(
+
+            "عملیات متوقف شد. برای ادامه از منوی زیر استفاده کنید:",
+
+            reply_markup=get_main_menu_keyboard()
+
+        )
 
     elif data.startswith("cancel_inv:"):
         invoice_id = int(data.split(":")[1])

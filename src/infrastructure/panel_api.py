@@ -98,4 +98,73 @@ class PanelApiService:
                 raise Exception(
                     f"Config Creation Error: {response.status_code} - {response.text}")
 
+    async def get_panel_stats(self) -> dict:
+        async with httpx.AsyncClient(verify=False) as client:
+            # ۱. لاگین و دریافت توکن جدید (دقیقاً مشابه کد requests)
+            # توجه: اگر متغیرهای username و password در کلاس self نیستند،
+            # باید آن‌ها را از فایل config ایمپورت کنی یا مستقیماً اینجا بنویسی.
+            login_url = f"{self.base_url}/api/admin/token"
+            login_response = await client.post(
+                login_url,
+                data={
+                    "username": self.username,  # یوزرنیم پنل
+                    "password": self.password  # پسورد پنل
+                }
+            )
+            login_response.raise_for_status()  # اگر لاگین ارور بده همینجا مشخص میشه
+            token_data = login_response.json()
+            token = token_data["access_token"]
+
+            headers = {"Authorization": f"Bearer {token}"}
+
+            # ۲. دریافت اطلاعات ادمین
+            admin_url = f"{self.base_url}/api/admin"
+            admin_response = await client.get(admin_url, headers=headers)
+            admin_response.raise_for_status()
+            admin = admin_response.json()
+
+            total_panel_traffic = admin.get("data_limit")
+            used_panel_traffic = admin.get("used_traffic", 0)
+
+            # ۳. دریافت لیست کاربران
+            users_url = f"{self.base_url}/api/users"
+            users_response = await client.get(users_url, headers=headers)
+            users_response.raise_for_status()
+            users_data = users_response.json()
+
+            if isinstance(users_data, list):
+                users = users_data
+            elif isinstance(users_data, dict):
+                users = users_data.get("users", [])
+            else:
+                users = []
+
+            total_assigned = 0
+            unlimited_users_count = 0
+
+            # ۴. محاسبه ترافیک
+            for user in users:
+                data_limit = user.get("data_limit")
+                if data_limit is None or data_limit == 0:
+                    unlimited_users_count += 1
+                    continue
+                total_assigned += data_limit
+
+            panel_remaining = max(total_panel_traffic - used_panel_traffic,
+                                  0) if total_panel_traffic is not None else None
+            assigned_percentage = (
+                        (total_assigned / total_panel_traffic) * 100) if (
+                        total_panel_traffic and total_panel_traffic > 0) else None
+
+            return {
+                "admin_username": admin.get("username"),
+                "total_panel_traffic": total_panel_traffic,
+                "used_panel_traffic": used_panel_traffic,
+                "panel_remaining": panel_remaining,
+                "users_count": len(users),
+                "total_assigned": total_assigned,
+                "assigned_percentage": assigned_percentage,
+                "unlimited_users_count": unlimited_users_count
+            }
+
 panel_api = PanelApiService()

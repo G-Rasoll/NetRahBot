@@ -546,7 +546,7 @@ class OrderService:
                 END
 
                 INSERT INTO invoices (
-                    user_id, package_id, memo, status_id, 
+                    user_id, package_id, custom_config_name, status_id, 
                     package_title_snapshot, package_price_snapshot_rial, package_volume_snapshot_mb, 
                     payment_currency_code, expected_payment_amount, amount_received, tx_hash, expires_at, created_at
                 ) 
