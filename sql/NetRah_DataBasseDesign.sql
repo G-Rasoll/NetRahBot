@@ -83,6 +83,8 @@ CREATE TABLE invoices
     created_at DATETIME2 NOT NULL 
         CONSTRAINT DF_Invoices_CreatedAt DEFAULT (GETDATE()),
     custom_config_name NVARCHAR(100) NULL;
+    chat_id BIGINT NULL;
+    message_id BIGINT NULL;
     CONSTRAINT FK_Invoices_Users
         FOREIGN KEY (user_id) REFERENCES users(id),
     CONSTRAINT FK_Invoices_Packages

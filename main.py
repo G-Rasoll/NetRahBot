@@ -5,7 +5,7 @@ from config import BOT_TOKEN
 import socket
 from src.bot.handlers import start_handler, menu_handler, \
     package_selection_callback, verify_join_callback, claim_reward_callback,\
-    my_services_callback_handler
+    my_services_callback_handler, invoice_callbacks
 
 
 socket.setdefaulttimeout(30)
@@ -41,7 +41,8 @@ def main() -> None:
         application.add_handler(
             CallbackQueryHandler(my_services_callback_handler,
                                  pattern=r"^(srv_|ignore$)"))
-
+        application.add_handler(CallbackQueryHandler(invoice_callbacks,
+                                                     pattern="^(ask_discount|back_to_inv|cancel_inv):"))
         logger.info("NetRah Bot is listening for commerce requests...")
         application.run_polling()
     except Exception as e:

@@ -115,3 +115,19 @@ def get_service_detail_keyboard(sub_id: int, current_page: int, is_free_package:
     keyboard.append([InlineKeyboardButton("🔙 بازگشت به لیست", callback_data=f"srv_page:{current_page}")])
 
     return InlineKeyboardMarkup(keyboard)
+
+
+def get_invoice_keyboard(payment_url: str, invoice_id: int) -> InlineKeyboardMarkup:
+    """کیبورد جدید فاکتور با دکمه اعمال تخفیف"""
+    keyboard = [
+        [InlineKeyboardButton("💳 پرداخت با TON", url=payment_url)],
+        [InlineKeyboardButton("🎁 اعمال کد تخفیف", callback_data=f"ask_discount:{invoice_id}")],
+        [InlineKeyboardButton("❌ لغو فاکتور", callback_data=f"cancel_inv:{invoice_id}")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def get_cancel_discount_keyboard(invoice_id: int) -> InlineKeyboardMarkup:
+    """برای دکمه انصراف از وارد کردن کد تخفیف"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 بازگشت به فاکتور", callback_data=f"back_to_inv:{invoice_id}")]
+    ])

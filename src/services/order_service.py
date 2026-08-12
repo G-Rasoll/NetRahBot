@@ -7,13 +7,12 @@ from src.infrastructure.payments.ton_payment import TonPayment
 from src.infrastructure.panel_api import panel_api
 from src.services.package_service import PackageService
 from src.services.user_service import UserService
-from config import MY_TON_WALLET, INVOICE_EXPIRY_MINUTES,PANEL_ALLOCATION_MODE
+from src.services.discount_service import DiscountService
+from config import MY_TON_WALLET, INVOICE_EXPIRY_MINUTES, PANEL_ALLOCATION_MODE
 from typing import Optional, Dict, Any
 import aiohttp
 import random
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +22,7 @@ class OrderService:
         self.package_service = PackageService()
         self.ton_gateway = TonPayment(wallet_address=MY_TON_WALLET)
         self.User_service = UserService()
+        self.discount_service = DiscountService()
 
     async def _get_current_gram_rate(self) -> float:
         async with aiohttp.ClientSession() as session:
@@ -95,89 +95,174 @@ class OrderService:
             )
             raise
 
-    async def create_invoice(
-            self,
-            user_internal_id: int,
-            package_id: int,
-            custom_name: str = None
-    ) -> Optional[Dict[str, Any]]:
-
+    async def create_invoice(self, user_internal_id: int, package_id: int,
+                             custom_name: str) -> Optional[Dict[str, Any]]:
+        """صدور فاکتور در سریع ترین زمان ممکن بدون درگیری با کد تخفیف"""
         try:
             package = await self.package_service.get_package_by_id(package_id)
             if not package or not package['is_active']:
                 return None
 
+            base_price_rial = float(package['price_rial'])
             gram_rate = await self._get_current_gram_rate()
-            if gram_rate <= 0:
-                raise ValueError(
-                    "Calculated GRAM exchange rate must be greater than zero."
-                )
-            package_price = Decimal(str(package['price_rial']))
-            gram_rate_decimal = Decimal(str(gram_rate))
-            raw_base_amount = package_price / gram_rate_decimal
+
+            raw_base_amount = Decimal(str(base_price_rial)) / Decimal(
+                str(gram_rate))
             base_expected_amount = raw_base_amount.quantize(
-                Decimal("0.000000001"),
-                rounding=ROUND_HALF_UP
-            )
+                Decimal("0.000000001"), rounding=ROUND_HALF_UP)
             expected_amount = await self._generate_unique_amount(
                 base_expected_amount)
             expires_at = datetime.now() + timedelta(
                 minutes=INVOICE_EXPIRY_MINUTES)
+
             query = """
                 INSERT INTO invoices (
-                    user_id,
-                    package_id,
-                    status_id,
-                    package_title_snapshot,
-                    package_price_snapshot_rial,
-                    package_volume_snapshot_mb,
-                    payment_currency_code,
-                    expected_payment_amount,
-                    amount_received,
-                    expires_at,
-                    custom_config_name
+                    user_id, package_id, status_id, package_title_snapshot, 
+                    package_price_snapshot_rial, package_volume_snapshot_mb, 
+                    payment_currency_code, expected_payment_amount, amount_received, 
+                    expires_at, custom_config_name
                 )
                 OUTPUT INSERTED.id
-                VALUES (?, ?, 1, ?, ?, ?, ?, ?, 0.0, ?, ?)
+                VALUES (?, ?, 1, ?, ?, ?, 'GRAM', ?, 0.0, ?, ?)
             """
             params = (
-                user_internal_id,
-                package['id'],
-                package['title'],
-                package['price_rial'],
-                package['volume_mb'],
-                "GRAM",
-                expected_amount,
-                expires_at,
-                custom_name
+                user_internal_id, package['id'], package['title'],
+                package['price_rial'], package['volume_mb'],
+                expected_amount, expires_at, custom_name
             )
+
             invoice_id = await db.execute_insert_return_id(query, params)
             payment_url = self.ton_gateway.create_invoice_link(
                 amount=expected_amount)
-            logger.info(
-                f"Invoice created: "
-                f"id={invoice_id}, "
-                f"base_amount={base_expected_amount}, "
-                f"expected_amount={expected_amount}, "
-                f"currency=GRAM"
-            )
+
             return {
                 "invoice_id": invoice_id,
                 "expected_amount": expected_amount,
                 "payment_link": payment_url,
                 "expires_at": expires_at,
-                "package_title": package['title']
+                "package_title": package['title'],
+                "price_rial": base_price_rial
             }
         except Exception as e:
-            logger.error(
-                f"Error in creating invoice for user {user_internal_id}: {e}",
-                exc_info=True
-            )
-            raise
+            logger.error(f"Error creating invoice: {e}", exc_info=True)
+            raise e
 
+    async def apply_discount_to_invoice(self, invoice_id: int, user_id: int,
+                                        discount_code: str) -> Dict[str, Any]:
+
+        try:
+            # ۱. خواندن فاکتور فعلی
+            invoice = await db.execute_query_single(
+                "SELECT * FROM invoices WHERE id = ? AND user_id = ?",
+                (invoice_id, user_id))
+            if not invoice:
+                return {"success": False, "msg": "❌ فاکتور یافت نشد."}
+            if invoice['status_id'] != 1:
+                return {"success": False,
+                        "msg": "❌ این فاکتور قابل ویرایش نیست (پرداخت شده یا منقضی)."}
+
+            base_price = float(invoice['package_price_snapshot_rial'])
+            package_id = invoice['package_id']
+
+            # ۲. ولیدیشن بیزینسی اولیه
+            val = await self.discount_service.validate_discount_for_invoice(
+                discount_code, user_id, package_id, base_price)
+            if not val['is_valid']:
+                return {"success": False, "msg": val['msg']}
+
+            discount_id = val['discount_id']
+            discount_amount = val['discount_amount']
+            final_price_rial = base_price - discount_amount
+
+            # ۳. محاسبه مجدد مبلغ کریپتو
+            gram_rate = await self._get_current_gram_rate()
+            new_raw_amount = Decimal(str(final_price_rial)) / Decimal(
+                str(gram_rate))
+            new_base_expected = new_raw_amount.quantize(Decimal("0.000000001"),
+                                                        rounding=ROUND_HALF_UP)
+            new_expected_amount = await self._generate_unique_amount(
+                new_base_expected)
+
+            # ۴. تراکنش اتمیک در SQL
+            transaction_query = """
+            BEGIN TRY
+                BEGIN TRANSACTION;
+
+                DECLARE @MaxLimit INT = ?;
+                DECLARE @UserLimit INT = ?;
+                DECLARE @UsedTotal INT;
+                DECLARE @UsedUser INT;
+                DECLARE @CurrentInvStatus INT;
+
+                -- قفل کردن فاکتور جاری جهت جلوگیری از Race Condition
+                SELECT @CurrentInvStatus = status_id FROM invoices WITH (UPDLOCK) WHERE id = ?;
+                IF @CurrentInvStatus != 1
+                    THROW 50000, 'Invoice status changed.', 1;
+
+                -- گام A: آزادسازی کد تخفیف از سایر فاکتورهای پرداخت‌نشده این کاربر
+                UPDATE invoices 
+                SET discount_id = NULL, 
+                    discount_amount_rial = 0
+                WHERE user_id = ? AND status_id = 1 AND discount_id = ? AND id != ?;
+
+                -- گام B: محاسبه ظرفیت فقط بر اساس خریدهای موفق و نهایی شده (status_id IN (2, 3))
+                SELECT @UsedTotal = COUNT(id) FROM invoices WITH (UPDLOCK) WHERE discount_id = ? AND status_id IN (2, 3);
+                SELECT @UsedUser = COUNT(id) FROM invoices WITH (UPDLOCK) WHERE discount_id = ? AND user_id = ? AND status_id IN (2, 3);
+
+                IF @MaxLimit IS NOT NULL AND @UsedTotal >= @MaxLimit
+                    THROW 50001, '❌ متاسفانه ظرفیت استفاده از این کد تخفیف به پایان رسیده است.', 1;
+
+                IF @UsedUser >= @UserLimit
+                    THROW 50002, '❌ شما قبلاً در یک خرید موفق از این کد تخفیف استفاده کرده‌اید.', 1;
+
+                -- گام C: اعمال کد تخفیف روی فاکتور جدید
+                UPDATE invoices 
+                SET discount_id = ?, 
+                    discount_amount_rial = ?, 
+                    expected_payment_amount = ?
+                WHERE id = ?;
+
+                COMMIT TRANSACTION;
+            END TRY
+            BEGIN CATCH
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                THROW;
+            END CATCH
+            """
+
+            params = (
+                val['total_limit'], val['user_limit'],
+                invoice_id,
+                user_id, discount_id, invoice_id,
+                # آزادسازی از فاکتورهای قبلی کاربر
+                discount_id,  # چک UsedTotal روی status 2,3
+                discount_id, user_id,  # چک UsedUser روی status 2,3
+                discount_id, discount_amount, float(new_expected_amount),
+                invoice_id  # آپدیت فاکتور جاری
+            )
+
+            await db.execute_non_query(transaction_query, params)
+            new_payment_url = self.ton_gateway.create_invoice_link(
+                amount=float(new_expected_amount))
+
+            return {
+                "success": True,
+                "new_expected_amount": float(new_expected_amount),
+                "new_payment_link": new_payment_url,
+                "discount_amount": discount_amount,
+                "final_price_rial": final_price_rial
+            }
+
+        except Exception as e:
+            logger.error(
+                f"Error applying discount to invoice {invoice_id}: {e}")
+            if "50001" in str(e) or "50002" in str(e):
+                err_msg = str(e).split("'")[1] if "'" in str(
+                    e) else "خطای محدودیت ظرفیت."
+                return {"success": False, "msg": err_msg}
+            return {"success": False, "msg": "❌ خطای سیستمی در اعمال کد تخفیف."}
     async def update_invoice_message_data(self, invoice_id: int, chat_id: int,
                                           message_id: int):
-        """ثبت آیدی پیام تلگرام در دیتابیس برای حذف در صورت انقضا"""
         try:
             query = "UPDATE invoices SET chat_id = ?, message_id = ? WHERE id = ?"
             await db.execute_non_query(query, (chat_id, message_id, invoice_id))
@@ -194,12 +279,10 @@ class OrderService:
                                          amount_received: float,
                                          tx_time: int) -> Dict[str, Any]:
 
-        # بررسی تقلب زمانی (پرداخت دیرهنگام)
         invoice = await db.execute_query_single(
             "SELECT expires_at FROM invoices WHERE id = ?", (invoice_id,))
         if invoice:
             tx_datetime = datetime.fromtimestamp(tx_time)
-            # اگر زمان تراکنش روی بلاکچین از زمان انقضای ما بیشتر باشد
             if tx_datetime > invoice['expires_at']:
                 logger.warning(
                     f"Late payment detected for invoice {invoice_id}. Updating status to 6 (LATE_PAYMENT).")
@@ -208,7 +291,6 @@ class OrderService:
                 tx_hash, amount_received, invoice_id))
                 return {"status": "LATE_PAYMENT", "link": None}
 
-        # آپدیت فاکتور به PAID
         query_update_invoice = """
                     UPDATE invoices 
                     SET status_id = 2, tx_hash = ?, amount_received = ? 
@@ -303,9 +385,9 @@ class OrderService:
                 return {"status": "SUCCESS", "link": result['link']}
             else:
                 return {"status": "OUT_OF_STOCK", "link": None}
+
     async def claim_free_test_package(self, user_internal_id: int,
                                       telegram_id: int) -> Dict[str, Any]:
-
         try:
             check_user_query = "SELECT has_used_test_package FROM users WHERE id = ?"
             user_status = await db.execute_query_single(check_user_query,
@@ -324,16 +406,13 @@ class OrderService:
                 vol_gb = float(test_pkg['volume_gb'])
 
                 try:
-                    # تلاش برای ساخت کانفیگ در پنل
                     generated_link = await panel_api.create_user_config(
                         limit_gb=vol_gb, sub_type="Test",
                         telegram_id=telegram_id)
                 except Exception as api_ex:
-                    # مکانیزم دفاعی هوشمند: نجات کانفیگ در صورت بازگرداندن استاتوس موفقیت‌آمیز 201
                     import re
                     err_msg = str(api_ex)
                     if "201 -" in err_msg and "subscription_url" in err_msg:
-                        # استخراج لینک سابسکریپشن از بدنه جی‌سون موجود در متن خطا
                         match = re.search(r'"subscription_url"\s*:\s*"([^"]+)"',
                                           err_msg)
                         if match:
@@ -343,25 +422,20 @@ class OrderService:
                         else:
                             raise api_ex
                     else:
-                        # اگر خطا واقعاً جدی بود (مثل قطعی سرور یا ۴۰۰)، خطا را بالا بفرست
                         raise api_ex
 
-                # اجرای تراکنش دیتابیس در صورت داشتن لینک (چه از مسیر عادی چه از مسیر نجات)
                 try:
                     auto_transaction = """
                                     BEGIN TRY
                                         BEGIN TRANSACTION;
 
-                                        -- ۱. ثبت کانفیگ در موجودی انبار
                                         INSERT INTO subscription_inventory (package_id, subscription_link, is_assigned, created_at)
                                         VALUES (?, ?, 1, GETDATE());
                                         DECLARE @InventoryId INT = SCOPE_IDENTITY();
 
-                                        -- ۲. تخصیص کانفیگ به کاربر
                                         INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
                                         VALUES (?, @InventoryId, NULL, GETDATE(), N'تست رایگان');
 
-                                        -- ۳. علامت‌گذاری استفاده کاربر
                                         UPDATE users SET has_used_test_package = 1 WHERE id = ?;
 
                                         COMMIT TRANSACTION;
@@ -389,7 +463,6 @@ class OrderService:
 
                            DECLARE @UpdatedInventory TABLE (id INT, subscription_link NVARCHAR(MAX));
 
-                           -- صید اتمیک کانفیگ تست بدون ایجاد صف مسدودکننده (Blocking)
                            UPDATE TOP (1) subscription_inventory
                            SET is_assigned = 1
                            OUTPUT INSERTED.id, INSERTED.subscription_link INTO @UpdatedInventory
@@ -402,11 +475,9 @@ class OrderService:
 
                                SELECT @InventoryId = id, @Link = subscription_link FROM @UpdatedInventory;
 
-                               -- ثبت اشتراک تست
                                INSERT INTO user_subscriptions (user_id, inventory_id, invoice_id, assigned_at, config_name)
                                VALUES (?, @InventoryId, NULL, GETDATE(), N'تست رایگان');
 
-                               -- مسدودسازی درخواست‌های تست بعدی این کاربر
                                UPDATE users SET has_used_test_package = 1 WHERE id = ?;
 
                                COMMIT TRANSACTION;
@@ -437,6 +508,7 @@ class OrderService:
             logger.error(
                 f"Error claiming free test package for user {user_internal_id}: {e}")
             return {"status": "ERROR", "link": None}
+
     async def handle_expired_invoices(self) -> int:
         query = "UPDATE invoices SET status_id = 4 WHERE status_id = 1 AND expires_at < GETDATE()"
         await db.execute_non_query(query)
@@ -444,8 +516,7 @@ class OrderService:
     async def create_manual_admin_config(self, admin_internal_id: int,
                                          admin_tg_id: int, volume_gb: float,
                                          brand_name: str,
-                                         custom_name: str = None) -> Dict[
-        str, Any]:
+                                         custom_name: str = None) -> Dict[str, Any]:
         try:
             generated_link = await panel_api.create_user_config(
                 sub_type="Manual",
@@ -514,3 +585,17 @@ class OrderService:
             logger.error(
                 f"Error creating manual admin config for user {admin_internal_id}: {e}")
             return {"status": "ERROR", "message": str(e)}
+
+    async def cancel_invoice(self, invoice_id: int, user_id: int) -> bool:
+        """لغو فاکتور و آزادسازی کد تخفیف روی آن در دیتابیس"""
+        try:
+            query = """
+                UPDATE invoices 
+                SET status_id = 4, discount_id = NULL, discount_amount_rial = 0 
+                WHERE id = ? AND user_id = ? AND status_id = 1
+            """
+            await db.execute_non_query(query, (invoice_id, user_id))
+            return True
+        except Exception as e:
+            logger.error(f"Error cancelling invoice {invoice_id}: {e}")
+            return False
