@@ -17,6 +17,7 @@ from src.bot.keyboards import (
     get_my_services_keyboard, get_service_detail_keyboard,
     get_invoice_keyboard, get_cancel_discount_keyboard
 )
+from src.utils.helpers import format_bytes
 
 logger = logging.getLogger(__name__)
 user_service = UserService()
@@ -24,17 +25,6 @@ package_service = PackageService()
 order_service = OrderService()
 referral_service = ReferralService()
 
-
-def format_bytes(value):
-    if value is None:
-        return "نامحدود"
-    value = float(value)
-    units = ["B", "KB", "MB", "GB", "TB", "PB"]
-    for unit in units:
-        if value < 1024:
-            return f"{value:.2f} {unit}"
-        value /= 1024
-    return f"{value:.2f} EB"
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     tg_user = update.effective_user

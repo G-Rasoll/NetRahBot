@@ -13,7 +13,7 @@ from typing import Optional, Dict, Any
 import aiohttp
 import random
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
-
+from src.bot.notifier import trigger_panel_capacity_check
 logger = logging.getLogger(__name__)
 
 
@@ -334,6 +334,7 @@ class OrderService:
                 await db.execute_query_single(auto_transaction, (
                 invoice_id, package_id, generated_link, user_id, invoice_id,
                 invoice_id))
+                trigger_panel_capacity_check()
                 return {"status": "SUCCESS", "link": generated_link}
 
             except Exception as ex:
@@ -381,6 +382,7 @@ class OrderService:
             result = await db.execute_query_single(transaction_query, (
             invoice_id, package_id, user_id, invoice_id, invoice_id))
             if result and result['success'] == 1:
+                trigger_panel_capacity_check()
                 return {"status": "SUCCESS", "link": result['link']}
             else:
                 return {"status": "OUT_OF_STOCK", "link": None}
@@ -449,6 +451,7 @@ class OrderService:
                         test_pkg['id'], generated_link, user_internal_id,
                         user_internal_id
                     ))
+                    trigger_panel_capacity_check()
                     return {"status": "SUCCESS", "link": generated_link}
 
                 except Exception as db_ex:
@@ -499,6 +502,7 @@ class OrderService:
                 test_pkg['id'], user_internal_id, user_internal_id))
 
             if res and res['success'] == 1:
+                trigger_panel_capacity_check()
                 return {"status": "SUCCESS", "link": res['link']}
             else:
                 return {"status": "OUT_OF_STOCK", "link": None}
@@ -582,7 +586,7 @@ class OrderService:
                  None, chat_id, message_id, generated_link, admin_internal_id,
                  custom_name)
             )
-
+            trigger_panel_capacity_check()
             return {"status": "SUCCESS", "link": generated_link}
 
         except Exception as e:
