@@ -80,7 +80,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("⚠️ خطا در ارتباط با سرور.")
 
 
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def menu_handler(update: Update,
+                       context: ContextTypes.DEFAULT_TYPE) -> None:
     """مدیریت پیام‌های متنی منو و استیت‌های ورودی کاربر"""
     text = update.message.text
     user_tg_id = update.effective_user.id
@@ -107,18 +108,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # ۱. استیت "انتظار برای وارد کردن کد تخفیف"
     # ----------------------------------------------------
     if 'waiting_for_discount_invoice_id' in context.user_data:
-
-        # لیستی از دکمه‌های متنی منو و دستورات اصلی
         main_menu_commands = [
             "🛍️ خرید اشتراک جدید", "🎁 دریافت کانفیگ تست (رایگان)",
             "👤 سرویس‌های من", "📊 پشتیبانی و راهنما",
             "👥 زیرمجموعه‌گیری و دعوت", "📈 آمار کلی پنل", "/start"
         ]
 
-        # اگر کاربر دکمه‌های کیبورد اصلی را لمس کرد یا /start فرستاد، استیت را فوراً پاک کن
         if text in main_menu_commands:
             del context.user_data['waiting_for_discount_invoice_id']
-            # در اینجا return نمی‌کنیم تا پیام به پایین‌تر برود و توسط بلاک‌های اصلی منو پردازش شود.
         else:
             invoice_id = context.user_data['waiting_for_discount_invoice_id']
             discount_code = text.strip()
@@ -132,7 +129,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
             loading = await update.message.reply_text(
                 "⏳ در حال بررسی و اعمال کد تخفیف...")
-
             result = await order_service.apply_discount_to_invoice(invoice_id,
                                                                    internal_id,
                                                                    discount_code)
@@ -151,81 +147,116 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f"💰 مبلغ کسر شده: `{result['discount_amount']:,.0f}` \n"
                 f"💳 مبلغ جدید به ریال: `{result['final_price_rial']:,.0f}`\n\n"
                 f"💎 مبلغ جدید پرداختی: `{result['new_expected_amount']}` TON\n\n"
-                 f"⚠️ **هشدار بسیار مهم:**\n"
+                f"⚠️ **هشدار بسیار مهم:**\n"
                 f"سیستم ما مبالغ را به صورت رندوم یکتا تولید می‌کند. لطفاً **به هیچ عنوان مبلغ را رند نکنید!** دقیقاً همین مبلغ بالا را پرداخت کنید، در غیر این صورت ربات تراکنش شما را شناسایی نمی‌کند و کانفیگ تحویل داده نمی‌شود.\n\n"
                 f"💼 **آدرس کیف پول ما (جهت کپی کلیک کنید):**\n"
                 f"`{MY_TON_WALLET}`\n\n"
                 f"جهت پرداخت روی دکمه زیر کلیک کنید:"
             )
             new_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💳 پرداخت با TON", url=result['new_payment_link'])],
-                [InlineKeyboardButton("❌ لغو فاکتور", callback_data=f"cancel_inv:{invoice_id}")]
+                [InlineKeyboardButton("💳 پرداخت با TON",
+                                      url=result['new_payment_link'])],
+                [InlineKeyboardButton("❌ لغو فاکتور",
+                                      callback_data=f"cancel_inv:{invoice_id}")]
             ])
-            await loading.edit_text(success_msg, reply_markup=new_kb, parse_mode="Markdown")
+            await loading.edit_text(success_msg, reply_markup=new_kb,
+                                    parse_mode="Markdown")
+
+            await order_service.update_invoice_message_data(
+                invoice_id=invoice_id,
+                chat_id=loading.chat_id,
+                message_id=loading.message_id)
+
             return
-        ##
+
+    # ----------------------------------------------------
+    # ۲. استیت "انتظار برای وارد کردن نام کانفیگ"
+    # ----------------------------------------------------
     if 'pending_config_name' in context.user_data:
         pending_data = context.user_data['pending_config_name']
         action_type = pending_data.get('type')
 
         if text == "❌ لغو عملیات":
             del context.user_data['pending_config_name']
-            await update.message.reply_text("عملیات لغو شد.", reply_markup=get_main_menu_keyboard(user_tg_id))
+            await update.message.reply_text("عملیات لغو شد.",
+                                            reply_markup=get_main_menu_keyboard(
+                                                user_tg_id))
             return
 
         custom_name = None
         if text != "🎲 ایجاد نام تصادفی (Random)":
             safe_name = re.sub(r'[^a-zA-Z0-9_]', '', text.replace(" ", "_"))
             if not safe_name:
-                await update.message.reply_text("⚠️ لطفاً نام را فقط با حروف انگلیسی تایپ کنید، یا دکمه تصادفی را بزنید:")
+                await update.message.reply_text(
+                    "⚠️ لطفاً نام را فقط با حروف انگلیسی تایپ کنید، یا دکمه تصادفی را بزنید:")
                 return
             custom_name = safe_name[:20]
         else:
             prefix = "Rnd_" if action_type == 'admin_manual' else "Sub_"
-            custom_name = prefix + ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(5))
+            custom_name = prefix + ''.join(
+                secrets.choice(string.ascii_letters + string.digits) for _ in
+                range(5))
 
         if action_type == 'admin_manual':
             volume_gb = pending_data['gb']
             brand_name = pending_data['brand']
 
-            loading_msg = await update.message.reply_text(f"⏳ در حال ساخت کانفیگ تحت برند `{brand_name}`...")
+            loading_msg = await update.message.reply_text(
+                f"⏳ در حال ساخت کانفیگ تحت برند `{brand_name}`...")
 
             try:
                 res = await order_service.create_manual_admin_config(
-                    internal_id, user_tg_id, volume_gb, brand_name, custom_name
+                    internal_id, user_tg_id, volume_gb, brand_name, custom_name,
+                    chat_id=update.effective_chat.id,
+                    message_id=loading_msg.message_id
                 )
+
+                await loading_msg.delete()  # حذف پیام اضافی لودینگ
+
                 if res["status"] == "SUCCESS":
                     success_text = (
                         f"✅ **کانفیگ دستی با موفقیت ساخته شد!**\n\n"
                         f"🏷 **نام:** `{custom_name}`\n"
                         f"📊 **حجم:** `{volume_gb}` گیگابایت\n"
-                        f"🏢 **برند:** `{brand_name}`\n"
-                        f"🔑 **کد رهگیری:** `{res['memo']}`\n\n"
+                        f"🏢 **برند:** `{brand_name}`\n\n"
                         f"🔗 **لینک اتصال اختصاصی:**\n`{res['link']}`"
                     )
-                    await loading_msg.edit_text(success_text, parse_mode="Markdown")
+                    # جایگزین کردن کیبورد قدیمی با کیبورد اصلی ادمین در یک پیام تمیز
+                    await update.message.reply_text(success_text,
+                                                    reply_markup=get_main_menu_keyboard(
+                                                        user_tg_id),
+                                                    parse_mode="Markdown")
                 else:
-                    await loading_msg.edit_text("❌ خطایی در پنل یا دیتابیس رخ داد.")
+                    await update.message.reply_text(
+                        "❌ خطایی در پنل یا دیتابیس رخ داد.",
+                        reply_markup=get_main_menu_keyboard(user_tg_id))
             except Exception as e:
                 logger.error(f"Error generating manual config in handler: {e}")
-                await loading_msg.edit_text("⚠️ خطای غیرمنتظره در ساخت کانفیگ.")
+                await loading_msg.delete()
+                await update.message.reply_text(
+                    "⚠️ خطای غیرمنتظره در ساخت کانفیگ.",
+                    reply_markup=get_main_menu_keyboard(user_tg_id))
             finally:
                 if 'pending_config_name' in context.user_data:
                     del context.user_data['pending_config_name']
-                await update.message.reply_text("منوی اصلی:", reply_markup=get_main_menu_keyboard(user_tg_id))
             return
 
         elif action_type == 'user_buy':
             package_id = pending_data['package_id']
 
             loading_msg = await update.message.reply_text(
-                "⏳ در حال صدور فاکتور..."
-            )
+                "⏳ در حال صدور فاکتور...")
 
-            invoice_data = await order_service.create_invoice(internal_id, package_id, custom_name)
+            invoice_data = await order_service.create_invoice(internal_id,
+                                                              package_id,
+                                                              custom_name)
+
+            await loading_msg.delete()  # حذف پیام لودینگ
 
             if not invoice_data:
-                await loading_msg.edit_text("❌ خطا در صدور فاکتور. پکیج یافت نشد یا غیرفعال است.")
+                await update.message.reply_text(
+                    "❌ خطا در صدور فاکتور. پکیج یافت نشد یا غیرفعال است.",
+                    reply_markup=get_main_menu_keyboard(user_tg_id))
                 if 'pending_config_name' in context.user_data:
                     del context.user_data['pending_config_name']
                 return
@@ -236,18 +267,29 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f"🏷 نام کانفیگ: `{custom_name}`\n"
                 f"💰 مبلغ به ریال: `{invoice_data['price_rial']:,.0f}`\n"
                 f"💎 مبلغ پرداختی: `{invoice_data['expected_amount']}` TON\n\n"
-                 f"⚠️ **هشدار بسیار مهم:**\n"
-                 f"سیستم ما مبالغ را به صورت رندوم یکتا تولید می‌کند. لطفاً **به هیچ عنوان مبلغ را رند نکنید!** دقیقاً همین مبلغ بالا را پرداخت کنید، در غیر این صورت ربات تراکنش شما را شناسایی نمی‌کند و کانفیگ تحویل داده نمی‌شود.\n\n"
-                 f"💼 **آدرس کیف پول ما (جهت کپی کلیک کنید):**\n"
-                 f"`{MY_TON_WALLET}`\n\n"
+                f"⚠️ **هشدار بسیار مهم:**\n"
+                f"سیستم ما مبالغ را به صورت رندوم یکتا تولید می‌کند. لطفاً **به هیچ عنوان مبلغ را رند نکنید!** دقیقاً همین مبلغ بالا را پرداخت کنید، در غیر این صورت ربات تراکنش شما را شناسایی نمی‌کند و کانفیگ تحویل داده نمی‌شود.\n\n"
+                f"💼 **آدرس کیف پول ما (جهت کپی کلیک کنید):**\n"
+                f"`{MY_TON_WALLET}`\n\n"
                 f"⏱ فاکتور تا 30 دقیقه دیگر معتبر است."
             )
 
-            await loading_msg.edit_text(
+            # ارسال فاکتور با دکمه‌های شیشه‌ای
+            sent_invoice_msg = await update.message.reply_text(
                 msg,
                 reply_markup=get_invoice_keyboard(invoice_data['payment_link'],
                                                   invoice_data['invoice_id']),
                 parse_mode="Markdown"
+            )
+            await order_service.update_invoice_message_data(
+                invoice_id=invoice_data['invoice_id'],
+                chat_id=sent_invoice_msg.chat_id,
+                message_id=sent_invoice_msg.message_id
+            )
+            # بازگرداندن کیبورد اصلی به‌صورت تمیز تا کاربر روی انتخاب نام گیر نکند
+            await update.message.reply_text(
+                "فاکتور صادر شد ✅",
+                reply_markup=get_main_menu_keyboard(user_tg_id)
             )
 
             del context.user_data['pending_config_name']
@@ -291,11 +333,14 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         try:
             packages = await package_service.get_active_commercial_packages()
             if not packages:
-                await update.message.reply_text("😔 در حال حاضر پکیجی برای فروش تعریف نشده است.")
+                await update.message.reply_text(
+                    "😔 در حال حاضر پکیجی برای فروش تعریف نشده است.")
                 return
 
             kb = get_packages_keyboard(packages)
-            await update.message.reply_text("👇 لطفاً یکی از پکیج‌های زیر را جهت خرید انتخاب کنید:", reply_markup=kb)
+            await update.message.reply_text(
+                "👇 لطفاً یکی از پکیج‌های زیر را جهت خرید انتخاب کنید:",
+                reply_markup=kb)
         except Exception as e:
             logger.error(f"Error showing packages to user: {e}")
             await update.message.reply_text("⚠️ خطا در لود کردن لیست پکیج‌ها.")
@@ -315,43 +360,53 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 f"▫️ امتیازهای فعال فعلی (خریدهای موفق): `{stats['current_points']}` امتیاز\n\n"
                 f"💡 **راهنما:** به ازای **اولین خرید** هر نفری که با لینک شما وارد ربات شده، ۱ امتیاز می‌گیرید. شما می‌توانید هر زمان که مایل بودید، با کلیک روی دکمه زیر، امتیازهای خود را به کانفیگ هدیه تبدیل کنید (هر ۱ امتیاز = ۱ گیگابایت)."
             )
-            await update.message.reply_text(msg, reply_markup=get_referral_keyboard(), parse_mode="Markdown")
+            await update.message.reply_text(msg,
+                                            reply_markup=get_referral_keyboard(),
+                                            parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error displaying referral menu: {e}")
-            await update.message.reply_text("⚠️ خطایی در بارگذاری منوی دعوت رخ داد.")
+            await update.message.reply_text(
+                "⚠️ خطایی در بارگذاری منوی دعوت رخ داد.")
 
     elif text == "📊 پشتیبانی و راهنما":
-        await update.message.reply_text("👤 ایدی پشتیبانی جهت ارتباط:\n@NetRah_Support")
+        await update.message.reply_text(
+            "👤 ایدی پشتیبانی جهت ارتباط:\n@NetRah_Support")
 
     elif text == "👤 سرویس‌های من":
         try:
-            total_count = await user_service.get_user_subscriptions_count(internal_id)
+            total_count = await user_service.get_user_subscriptions_count(
+                internal_id)
             if total_count == 0:
                 empty_text = (
                     "🤷‍♂️ **شما در حال حاضر هیچ سرویس فعالی ندارید!**\n\n"
                     "💡 برای شروع می‌توانید از منوی زیر یکی از گزینه‌های **خرید اشتراک جدید** "
                     "یا **دریافت کانفیگ تست (رایگان)** را انتخاب کنید."
                 )
-                await update.message.reply_text(empty_text, parse_mode="Markdown")
+                await update.message.reply_text(empty_text,
+                                                parse_mode="Markdown")
                 return
 
             page = 0
             limit = 5
-            services = await user_service.get_user_subscriptions_paginated(internal_id, limit=limit, offset=0)
+            services = await user_service.get_user_subscriptions_paginated(
+                internal_id, limit=limit, offset=0)
             msg_text = (
                 f"👤 **لیست سرویس‌های فعال شما**\n"
                 f"📊 تعداد کل سرویس‌ها: `{total_count}` عدد\n\n"
                 f"👇 برای مشاهده مشخصات دقیق، روی سرویس مورد نظر کلیک کنید:"
             )
             kb = get_my_services_keyboard(services, page, total_count, limit)
-            await update.message.reply_text(msg_text, reply_markup=kb, parse_mode="Markdown")
+            await update.message.reply_text(msg_text, reply_markup=kb,
+                                            parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error in menu_handler for My Services: {e}")
-            await update.message.reply_text("⚠️ مشکلی در واکشی سرویس‌های شما پیش آمد. لطفاً مجدداً تلاش کنید.")
+            await update.message.reply_text(
+                "⚠️ مشکلی در واکشی سرویس‌های شما پیش آمد. لطفاً مجدداً تلاش کنید.")
 
     elif text == "🎁 دریافت کانفیگ تست (رایگان)":
         try:
-            result = await order_service.claim_free_test_package(internal_id, user_tg_id)
+            result = await order_service.claim_free_test_package(internal_id,
+                                                                 user_tg_id)
             if result["status"] == "SUCCESS":
                 success_test_text = (
                     f"🎁 **کانفیگ تست رایگان شما با موفقیت صادر شد!**\n\n"
@@ -359,19 +414,24 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     f"`{result['link']}`\n\n"
                     f"⚠️ توجه داشته باشید که هر کاربر تنها یک‌بار مجاز به استفاده از تست رایگان سیستم می‌باشد."
                 )
-                await update.message.reply_text(success_test_text, parse_mode="Markdown")
+                await update.message.reply_text(success_test_text,
+                                                parse_mode="Markdown")
             elif result["status"] == "ALREADY_USED":
-                await update.message.reply_text("❌ شما قبلاً یک‌بار پکیج تست رایگان خود را دریافت کرده‌اید و مجاز به دریافت مجدد نیستید.")
+                await update.message.reply_text(
+                    "❌ شما قبلاً یک‌بار پکیج تست رایگان خود را دریافت کرده‌اید و مجاز به دریافت مجدد نیستید.")
             elif result["status"] == "OUT_OF_STOCK":
-                await update.message.reply_text("😔 متاسفانه در حال حاضر کانفیگ تست در انبار پشتیبان موجود نیست. لطفا بعداً تلاش کنید یا به پشتیبانی پیام دهید.")
+                await update.message.reply_text(
+                    "😔 متاسفانه در حال حاضر کانفیگ تست در انبار پشتیبان موجود نیست. لطفا بعداً تلاش کنید یا به پشتیبانی پیام دهید.")
             elif result["status"] == "NO_TEST_PACKAGE_DEFINED":
-                await update.message.reply_text("⚙️ پکیج تست توسط مدیریت تعریف نشده است.")
+                await update.message.reply_text(
+                    "⚙️ پکیج تست توسط مدیریت تعریف نشده است.")
         except Exception as e:
-            logger.error(f"Error handling free test package for user {user_tg_id}: {e}")
-            await update.message.reply_text("⚠️ خطایی در پردازش درخواست شما رخ داد.")
+            logger.error(
+                f"Error handling free test package for user {user_tg_id}: {e}")
+            await update.message.reply_text(
+                "⚠️ خطایی در پردازش درخواست شما رخ داد.")
 
     elif text == "📈 آمار کلی پنل":
-        # بررسی امنیتی مضاعف: اگر کاربر دستی تایپ کرد ولی ادمین نبود، کاری انجام ندهد
         if user_tg_id not in ADMIN_IDS:
             await update.message.reply_text(
                 "⛔️ شما مجوز دسترسی به این بخش را ندارید.")
@@ -382,7 +442,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         try:
             stats = await panel_api.get_panel_stats()
-
             percentage_text = f"{stats['assigned_percentage']:.2f}%" if stats[
                                                                             'assigned_percentage'] is not None else "نامشخص"
 
@@ -410,11 +469,11 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "⚠️ خطا در دریافت اطلاعات از پنل. لطفاً وضعیت سرور را بررسی کنید.")
 
     else:
+        # حل مشکل Fallback (ارسال پیام چرندیات) که باعث گم شدن دکمه ادمین میشد
         await update.message.reply_text(
             "💡 لطفاً از گزینه‌های منو استفاده کنید.",
-            reply_markup=get_main_menu_keyboard()
+            reply_markup=get_main_menu_keyboard(user_tg_id)
         )
-
 
 async def package_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -494,7 +553,8 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
                 except Exception as e:
                     logger.error(f"Failed to notify inviter about join: {e}")
 
-            markup = get_main_menu_keyboard(tg_user)
+            # باگ ارسال شئ یوزر به جای آیدی برطرف شد
+            markup = get_main_menu_keyboard(tg_user.id)
             welcome_text = f"خوش آمدید! 🚀\nمنوی ربات **نت‌راه** برای شما فعال شد."
             await query.message.reply_text(welcome_text, reply_markup=markup, parse_mode="Markdown")
             await query.message.delete()
@@ -504,8 +564,6 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.message.reply_text("⚠️ خطا در ارتباط با سرور.")
     else:
         await query.answer("❌ شما هنوز عضو کانال نشده‌اید. لطفاً ابتدا عضو شوید!", show_alert=True)
-
-
 async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -639,6 +697,7 @@ async def my_services_callback_handler(update: Update, context: ContextTypes.DEF
 async def invoice_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
+    user_tg_id = update.effective_user.id # دریافت آیدی
 
     if data.startswith("ask_discount:"):
         invoice_id = int(data.split(":")[1])
@@ -650,39 +709,25 @@ async def invoice_callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_cancel_discount_keyboard(invoice_id)
         )
 
-    # ======== رفع باگ ۱: اضافه شدن هندلر بازگشت به فاکتور ========
     elif data.startswith("back_to_inv:"):
-        # استیت انتظار برای کد تخفیف را پاک می‌کنیم
         if 'waiting_for_discount_invoice_id' in context.user_data:
             del context.user_data['waiting_for_discount_invoice_id']
 
         await query.answer("عملیات ورود کد تخفیف لغو شد.")
-        # چون پیام درخواست کد تخفیف یک پیام جدید است، آن را حذف می‌کنیم تا صفحه خلوت شود
-        # فاکتور اصلی در پیام بالاتر دست‌نخورده باقی مانده است.
         await query.message.delete()
 
-    # ======== رفع باگ ۲: ادغام دو بلاک تکراری لغو فاکتور ========
     elif data.startswith("cancel_inv:"):
         invoice_id = int(data.split(":")[1])
         internal_id = context.user_data.get('internal_db_id')
 
-        # لغو فاکتور در دیتابیس (اگر تابع آن وجود دارد)
         if internal_id:
             await order_service.cancel_invoice(invoice_id, internal_id)
 
         await query.answer()
         await query.message.edit_text("❌ فاکتور با موفقیت لغو شد.")
 
-        # نمایش مجدد منوی اصلی
+        # نمایش مجدد منوی اصلی با ارسال آیدی تلگرام تا دکمه ادمین نپرد
         await query.message.reply_text(
             "عملیات متوقف شد. برای ادامه از منوی زیر استفاده کنید:",
-            reply_markup=get_main_menu_keyboard()
+            reply_markup=get_main_menu_keyboard(user_tg_id)
         )
-
-    elif data.startswith("cancel_inv:"):
-        invoice_id = int(data.split(":")[1])
-        internal_id = context.user_data.get('internal_db_id')
-        if internal_id:
-            await order_service.cancel_invoice(invoice_id, internal_id)
-        await query.answer()
-        await query.message.edit_text("❌ فاکتور با موفقیت لغو شد.")

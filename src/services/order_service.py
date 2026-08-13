@@ -234,20 +234,19 @@ class OrderService:
                 val['total_limit'], val['user_limit'],
                 invoice_id,
                 user_id, discount_id, invoice_id,
-                # آزادسازی از فاکتورهای قبلی کاربر
-                discount_id,  # چک UsedTotal روی status 2,3
-                discount_id, user_id,  # چک UsedUser روی status 2,3
-                discount_id, discount_amount, float(new_expected_amount),
-                invoice_id  # آپدیت فاکتور جاری
+                discount_id,
+                discount_id, user_id,
+                discount_id, discount_amount, new_expected_amount,
+                invoice_id
             )
 
             await db.execute_non_query(transaction_query, params)
             new_payment_url = self.ton_gateway.create_invoice_link(
-                amount=float(new_expected_amount))
+                amount=new_expected_amount)
 
             return {
                 "success": True,
-                "new_expected_amount": float(new_expected_amount),
+                "new_expected_amount": new_expected_amount,
                 "new_payment_link": new_payment_url,
                 "discount_amount": discount_amount,
                 "final_price_rial": final_price_rial
@@ -516,7 +515,10 @@ class OrderService:
     async def create_manual_admin_config(self, admin_internal_id: int,
                                          admin_tg_id: int, volume_gb: float,
                                          brand_name: str,
-                                         custom_name: str = None) -> Dict[str, Any]:
+                                         custom_name: str = None,
+                                         chat_id: int = None,
+                                         message_id: int = None) -> Dict[
+        str, Any]:
         try:
             generated_link = await panel_api.create_user_config(
                 sub_type="Manual",
@@ -526,7 +528,6 @@ class OrderService:
                 custom_name=custom_name
             )
 
-            memo = f"NR-{secrets.randbelow(900000) + 100000}"
             volume_mb = int(volume_gb * 1024)
             pkg_snapshot_title = f"🛠️ کانفیگ دستی ادمین ({volume_gb} GB) - {brand_name}"
 
@@ -548,12 +549,14 @@ class OrderService:
                 INSERT INTO invoices (
                     user_id, package_id, custom_config_name, status_id, 
                     package_title_snapshot, package_price_snapshot_rial, package_volume_snapshot_mb, 
-                    payment_currency_code, expected_payment_amount, amount_received, tx_hash, expires_at, created_at
+                    payment_currency_code, expected_payment_amount, amount_received, tx_hash, expires_at, created_at,
+                    chat_id, message_id
                 ) 
                 VALUES (
                     ?, @PkgId, ?, 3, 
                     ?, 0, ?, 
-                    'MANUAL', 0.0, 0.0, ?, GETDATE(), GETDATE()
+                    'MANUAL', 0.0, 0.0, ?, GETDATE(), GETDATE(),
+                    ?, ?
                 );
                 DECLARE @InvoiceId INT = SCOPE_IDENTITY();
 
@@ -575,16 +578,18 @@ class OrderService:
 
             await db.execute_query_single(
                 transaction_query,
-                (admin_internal_id, memo, pkg_snapshot_title, volume_mb,
-                 None, generated_link, admin_internal_id, custom_name)
+                (admin_internal_id, custom_name, pkg_snapshot_title, volume_mb,
+                 None, chat_id, message_id, generated_link, admin_internal_id,
+                 custom_name)
             )
 
-            return {"status": "SUCCESS", "link": generated_link, "memo": memo}
+            return {"status": "SUCCESS", "link": generated_link}
 
         except Exception as e:
             logger.error(
                 f"Error creating manual admin config for user {admin_internal_id}: {e}")
             return {"status": "ERROR", "message": str(e)}
+
 
     async def cancel_invoice(self, invoice_id: int, user_id: int) -> bool:
         """لغو فاکتور و آزادسازی کد تخفیف روی آن در دیتابیس"""
