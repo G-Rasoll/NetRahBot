@@ -18,6 +18,7 @@ from src.bot.keyboards import (
     get_invoice_keyboard, get_cancel_discount_keyboard
 )
 from src.utils.helpers import format_bytes
+from src.bot.notifier import send_config_with_qr
 
 logger = logging.getLogger(__name__)
 user_service = UserService()
@@ -211,11 +212,12 @@ async def menu_handler(update: Update,
                         f"🏢 **برند:** `{brand_name}`\n\n"
                         f"🔗 **لینک اتصال اختصاصی:**\n`{res['link']}`"
                     )
-                    # جایگزین کردن کیبورد قدیمی با کیبورد اصلی ادمین در یک پیام تمیز
-                    await update.message.reply_text(success_text,
-                                                    reply_markup=get_main_menu_keyboard(
-                                                        user_tg_id),
-                                                    parse_mode="Markdown")
+                    # ارسال کانفیگ همراه با QR Code لینک ساب + بازگرداندن کیبورد اصلی ادمین
+                    await send_config_with_qr(
+                        context.bot, update.effective_chat.id, res['link'],
+                        success_text,
+                        reply_markup=get_main_menu_keyboard(user_tg_id)
+                    )
                 else:
                     await update.message.reply_text(
                         "❌ خطایی در پنل یا دیتابیس رخ داد.",
@@ -404,8 +406,11 @@ async def menu_handler(update: Update,
                     f"`{result['link']}`\n\n"
                     f"⚠️ توجه داشته باشید که هر کاربر تنها یک‌بار مجاز به استفاده از تست رایگان سیستم می‌باشد."
                 )
-                await update.message.reply_text(success_test_text,
-                                                parse_mode="Markdown")
+                # ارسال کانفیگ تست همراه با QR Code لینک ساب
+                await send_config_with_qr(
+                    context.bot, update.effective_chat.id, result['link'],
+                    success_test_text
+                )
             elif result["status"] == "ALREADY_USED":
                 await update.message.reply_text(
                     "❌ شما قبلاً یک‌بار پکیج تست رایگان خود را دریافت کرده‌اید و مجاز به دریافت مجدد نیستید.")
@@ -584,7 +589,13 @@ async def claim_reward_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 f"`{result['link']}`\n\n"
                 f"💡 امتیازهای شما صفر شد. این سرویس به منوی «👤 سرویس‌های من» نیز اضافه گردید. با دعوت و خرید دوستان جدید می‌توانید دوباره هدیه بگیرید."
             )
-            await loading_msg.edit_text(success_text, parse_mode="Markdown")
+            # چون پیام «loading» متنی است و نمی‌توان آن را مستقیماً به عکس تبدیل کرد،
+            # پیام لودینگ حذف و کانفیگ نهایی همراه با QR Code ارسال می‌شود.
+            await loading_msg.delete()
+            await send_config_with_qr(
+                context.bot, update.effective_chat.id, result['link'],
+                success_text
+            )
 
         else:
             await loading_msg.edit_text("⚠️ خطایی در ارتباط با سرور پنل یا دیتابیس رخ داد. لطفا به پشتیبانی اطلاع دهید.")
@@ -624,7 +635,21 @@ async def my_services_callback_handler(update: Update, context: ContextTypes.DEF
             )
             kb = get_my_services_keyboard(services, page, total_count, limit)
 
-            await query.edit_message_text(msg_text, reply_markup=kb, parse_mode="Markdown")
+            if query.message.photo:
+                # پیام فعلی یک پیام عکس‌دار (صفحه جزئیات سرویس + QR) است؛ تلگرام اجازه
+                # نمی‌دهد پیام عکس‌دار مستقیماً با edit_message_text به پیام متنی
+                # تبدیل شود، پس پیام قبلی حذف و لیست به‌صورت پیام متنی جدید ارسال می‌شود.
+                try:
+                    await query.message.delete()
+                except Exception as del_err:
+                    logger.warning(
+                        f"Could not delete photo message on back-to-list nav: {del_err}")
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id, text=msg_text,
+                    reply_markup=kb, parse_mode="Markdown")
+            else:
+                await query.edit_message_text(msg_text, reply_markup=kb, parse_mode="Markdown")
+
             await query.answer()
 
         elif data.startswith("srv_det:"):
@@ -673,7 +698,19 @@ async def my_services_callback_handler(update: Update, context: ContextTypes.DEF
 
             kb = get_service_detail_keyboard(sub_id, current_page, is_free_package=is_free_service)
 
-            await query.edit_message_text(message_text, reply_markup=kb, parse_mode="Markdown")
+            # پیام لیست (متنی) قابل edit مستقیم به پیام عکس‌دار نیست، پس حذف و
+            # جزئیات سرویس به‌همراه QR Code لینک ساب به‌صورت پیام جدید ارسال می‌شود.
+            chat_id_for_reply = query.message.chat_id
+            try:
+                await query.message.delete()
+            except Exception as del_err:
+                logger.warning(
+                    f"Could not delete list message before showing service detail: {del_err}")
+
+            await send_config_with_qr(
+                context.bot, chat_id_for_reply, sub['subscription_link'],
+                message_text, reply_markup=kb
+            )
             await query.answer()
 
         elif data.startswith("srv_renew:"):

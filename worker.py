@@ -4,6 +4,7 @@ from telegram import Bot
 from src.infrastructure.database import db
 from src.infrastructure.payments.ton_payment import TonPayment
 from src.services.order_service import OrderService
+from src.bot.notifier import send_config_with_qr
 from config import BOT_TOKEN, MY_TON_WALLET
 
 logging.basicConfig(level=logging.INFO,
@@ -69,10 +70,13 @@ async def check_payments_and_expire():
                             text="⚠️ شما مبلغ را **پس از گذشت زمان انقضا** پرداخت کردید! تحویل کانفیگ متوقف شد. لطفاً جهت پیگیری وجه به پشتیبانی پیام دهید."
                         )
                     elif result["status"] == "SUCCESS" and inv['chat_id']:
-                        await bot.send_message(
-                            chat_id=inv['chat_id'],
-                            text=f"✅ پرداخت شما با موفقیت تایید شد!\n🔗 لینک اتصال شما:\n`{result['link']}`",
-                            parse_mode="Markdown"
+                        success_text = (
+                            f"✅ پرداخت شما با موفقیت تایید شد!\n"
+                            f"🔗 لینک اتصال شما:\n`{result['link']}`"
+                        )
+                        # تحویل کانفیگ همراه با QR Code لینک ساب (ساخت لوکال، بدون API ثالث)
+                        await send_config_with_qr(
+                            bot, inv['chat_id'], result['link'], success_text
                         )
                     elif result["status"] == "OUT_OF_STOCK" and inv['chat_id']:
                         await bot.send_message(
